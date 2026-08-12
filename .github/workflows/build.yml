@@ -10,7 +10,7 @@ on:
         type: choice
         options:
           - 'AOSP'
-          - 'Cirrus'
+          - 'GreenForce'
           - 'Neutron'
           - 'WeebX'
           - 'Zyc'
@@ -76,7 +76,7 @@ jobs:
             "AOSP")
               echo "Using AOSP Clang (Prebuilt)..."
               ;;
-            "Cirrus")
+            "GreenForce")
               git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1
               ;;
             "Neutron")
