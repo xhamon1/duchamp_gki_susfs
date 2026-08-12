@@ -120,12 +120,8 @@ jobs:
             export LTO=${{ github.event.inputs.lto_mode }}
           fi
           
-          echo "Memulai proses build GKI..."
-          tools/bazel build //common:kernel_aarch64 || \
-          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || \
-          [ -f "build.sh" ] && ./build.sh || \
-          [ -f "common/build.sh" ] && ./common/build.sh || \
-          echo "Error: Sistem build tidak ditemukan!"
+          echo "Memulai kompilasi GKI Kernel dengan Bazel..."
+          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
 
       - name: Upload Kernel Artifacts
         if: github.event.inputs.run_mode == 'Build'
@@ -133,7 +129,7 @@ jobs:
         with:
           name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
           path: |
-            kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*/by-target/*
+            kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*.img
-            kernel_source/common/out/kernel_aarch64/dist/*
+            kernel_source/common/out/*/dist/*
