@@ -124,7 +124,16 @@ jobs:
         run: |
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
+          # Cek lokasi bazel atau gunakan build script umum GKI
+          if [ -f "tools/bazel" ]; then
+            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
+          elif [ -f "build/build.sh" ]; then
+            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
+          else
+            echo "Build script not found, checking contents:"
+            ls -la
+            exit 1
+          fi
           echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
@@ -135,3 +144,4 @@ jobs:
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
+            kernel_source/out/*.img
