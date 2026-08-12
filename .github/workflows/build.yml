@@ -1,7 +1,41 @@
-name: Build GKI Kernel 6.1 with SUSFS
+name: Build GKI Kernel with Custom Options
 
 on:
   workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel Version'
+        required: true
+        default: '6.1'
+        type: choice
+        options:
+          - '6.1'
+      susfs_status:
+        description: 'SUSFS'
+        required: true
+        default: 'enable'
+        type: choice
+        options:
+          - 'enable'
+          - 'disable'
+      use_kernelsu:
+        description: 'Gunakan KernelSU (Opsional)'
+        required: false
+        default: true
+        type: boolean
+      use_wireguard:
+        description: 'Tambah Dukungan WireGuard'
+        required: false
+        default: false
+        type: boolean
+      run_mode:
+        description: 'Run Mode'
+        required: true
+        default: 'Build'
+        type: choice
+        options:
+          - 'Build'
+          - 'Test Only'
 
 jobs:
   build:
@@ -23,29 +57,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl patch
 
+      - name: Show Selected Options
+        run: |
+          echo "Kernel Version: ${{ github.event.inputs.kernel_version }}"
+          echo "SUSFS Status: ${{ github.event.inputs.susfs_status }}"
+          echo "Use KernelSU: ${{ github.event.inputs.use_kernelsu }}"
+          echo "Use WireGuard: ${{ github.event.inputs.use_wireguard }}"
+          echo "Run Mode: ${{ github.event.inputs.run_mode }}"
+
       - name: Clone GKI Android14-6.1 Source
         run: |
           git clone https://android.googlesource.com/kernel/common -b android14-6.1 kernel_source --depth=1
 
       - name: Download and Apply SUSFS Patch
+        if: github.event.inputs.susfs_status == 'enable'
         run: |
           cd kernel_source
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
           patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
-          echo "SUSFS Patch applied successfully!"
+          echo "SUSFS Patch applied successfully based on user input!"
 
       - name: Build GKI Kernel
+        if: github.event.inputs.run_mode == 'Build'
         run: |
           cd kernel_source
           tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
           echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
+        if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-6.1-SUSFS-Kernel
+          name: GKI-${{ github.event.inputs.kernel_version }}-SUSFS-Kernel
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
