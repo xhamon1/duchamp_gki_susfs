@@ -79,24 +79,12 @@ jobs:
 
       - name: Setup Clang Compiler
         run: |
-          echo "Using Compiler: ${{ github.event.inputs.compiler }}"
           mkdir -p clang
           case "${{ github.event.inputs.compiler }}" in
-            "AOSP")
-              echo "Using AOSP Clang (Prebuilt)..."
-              ;;
-            "GreenForce")
-              git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1
-              ;;
-            "Neutron")
-              git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
-              ;;
-            "WeebX")
-              git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
-              ;;
-            "Zyc")
-              git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1
-              ;;
+            "GreenForce") git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1 ;;
+            "Neutron") git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1 ;;
+            "WeebX") git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1 ;;
+            "Zyc") git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1 ;;
           esac
 
       - name: Clone GKI Source
@@ -108,15 +96,9 @@ jobs:
         run: |
           cd kernel_source
           case "${{ github.event.inputs.root_manager }}" in
-            "KernelSU-Next")
-              curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main
-              ;;
-            "SukiSU-Ultra")
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-              ;;
-            "ReSukiSU")
-              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
-              ;;
+            "KernelSU-Next") curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main ;;
+            "SukiSU-Ultra") curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
+            "ReSukiSU") curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main ;;
           esac
 
       - name: Download and Apply SUSFS Patch
@@ -134,35 +116,29 @@ jobs:
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          LTO_VAL="${{ github.event.inputs.lto_mode }}"
-          echo "Configuring LTO mode to: $LTO_VAL"
+          # Pengaturan LTO
+          if [ "${{ github.event.inputs.lto_mode }}" != "NONE" ]; then
+            export LTO=${{ github.event.inputs.lto_mode }}
+          fi
           
-          if [ "$LTO_VAL" == "NONE" ]; then
-            export LTO=none
-          elif [ "$LTO_VAL" == "THIN" ]; then
-            export LTO=thin
-          elif [ "$LTO_VAL" == "FULL" ]; then
-            export LTO=full
-          fi
-
-          if [ -f "build/build.sh" ]; then
-            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
-          elif [ -f "common/build.sh" ]; then
-            BUILD_CONFIG=build.config.aarch64 common/build.sh
-          elif [ -f "build.sh" ]; then
+          # Mencari skrip build yang tersedia dan menjalankannya
+          if [ -f "build.sh" ]; then
             ./build.sh
+          elif [ -f "build/build.sh" ]; then
+            ./build/build.sh
+          elif [ -f "tools/bazel" ]; then
+            tools/bazel run //common:kernel_aarch64
           else
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || python3 common/build/build.py
+            echo "Skrip build tidak ditemukan, menampilkan isi direktori:"
+            ls -R
+            exit 1
           fi
-          echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
+          name: GKI-Kernel-Artifacts
           path: |
-            kernel_source/out/kernel_aarch64/dist/*
-            kernel_source/out/*/by-target/*
-            kernel_source/common/out/kernel_aarch64/dist/*
-            out/kernel_aarch64/dist/*
+            kernel_source/out/*/dist/*
+            kernel_source/out/*.img
