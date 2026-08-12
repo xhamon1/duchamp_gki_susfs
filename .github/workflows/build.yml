@@ -31,8 +31,12 @@ jobs:
         run: |
           cd kernel_source
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
-          cp susfs4ksu/kernel_patches/KernelSU/*.patch ./
+          
+          # Salin file patch dan integrasikan dengan benar
+          cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch ./
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
-          git apply *.patch || true
-          echo "SUSFS Patch applied successfully!"
+          
+          # Terapkan patch utama
+          git apply 50_add_susfs_in_gki-android14-6.1.patch || true
+          echo "SUSFS Patch process finished!"
