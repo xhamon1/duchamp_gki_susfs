@@ -114,7 +114,7 @@ jobs:
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}-SUSFS-${{ github.event.inputs.susfs_status }}
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
