@@ -145,11 +145,15 @@ jobs:
             export LTO=full
           fi
 
-          # Menjalankan build GKI menggunakan tools/bazel asli dari source google
-          if [ -f "tools/bazel" ]; then
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
+          # Memastikan perintah build mencari skrip yang benar di dalam common atau root folder
+          if [ -f "build/build.sh" ]; then
+            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
+          elif [ -f "common/build.sh" ];</br>
+            BUILD_CONFIG=build.config.aarch64 common/build.sh
+          elif [ -f "build.sh" ]; then
+            ./build.sh
           else
-            build/build.sh
+            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || python3 common/build/build.py
           fi
           echo "Build process completed!"
 
@@ -161,4 +165,5 @@ jobs:
           path: |
             kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*/by-target/*
+            kernel_source/common/out/kernel_aarch64/dist/*
             out/kernel_aarch64/dist/*
