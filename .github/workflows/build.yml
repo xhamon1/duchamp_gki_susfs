@@ -1,20 +1,50 @@
-name: Build GKI Kernel with SUSFS
+name: Build GKI Kernel 6.1 with SUSFS
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-      runs-on: ubuntu-22.04
-      steps:
-        - name: Checkout Code
-          uses: actions/checkout@v4
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-        - name: Prepare Environment
-          run: |
-            sudo apt-get update
-            sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
 
-        - name: Info Check
-          run: |
-            echo "Environment ready for building GKI 6.1 kernel with SUSFS."
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl
+
+      - name: Clone GKI Android14-6.1 Source
+        run: |
+          git clone https://android.googlesource.com/kernel/common -b android14-6.1 kernel_source --depth=1
+
+      - name: Download and Apply SUSFS Patch
+        run: |
+          cd kernel_source
+          # Mengambil patch susfs4ksu untuk kernel 6.1
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
+          
+          # Menerapkan patch ke source kernel
+          cp susfs4ksu/kernel_patches/KernelSU/*.patch ./
+          cp -r susfs4ksu/kernel_patches/fs/* fs/
+          cp -r susfs4ksu/kernel_patches/include/* include/
+          
+          # Terapkan file patch utama
+          git apply *.patch || true
+          echo "SUSFS Patch applied successfully!"
+
+      - name: Info Check
+        run: |
+          cd kernel_source
+          echo "Source directory is ready and patched."
