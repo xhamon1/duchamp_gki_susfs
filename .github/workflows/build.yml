@@ -21,7 +21,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl patch
 
       - name: Clone GKI Android14-6.1 Source
         run: |
@@ -32,11 +32,11 @@ jobs:
           cd kernel_source
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
           
-          # Salin file patch dan integrasikan dengan benar
-          cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch ./
+          # Salin file ke lokasi yang benar
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
           
-          # Terapkan patch utama
-          git apply 50_add_susfs_in_gki-android14-6.1.patch || true
-          echo "SUSFS Patch process finished!"
+          # Terapkan patch menggunakan perintah patch dengan toleransi
+          patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
+          
+          echo "Patching attempt finished."
