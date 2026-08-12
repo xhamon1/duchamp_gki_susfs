@@ -3,6 +3,17 @@ name: Build GKI Kernel with Custom Options
 on:
   workflow_dispatch:
     inputs:
+      compiler:
+        description: 'Pilih Compiler (Clang)'
+        required: true
+        default: 'AOSP'
+        type: choice
+        options:
+          - 'AOSP'
+          - 'Cirrus'
+          - 'Neutron'
+          - 'WeebX'
+          - 'Zyc'
       kernel_version:
         description: 'Kernel Version'
         required: true
@@ -28,11 +39,6 @@ on:
         options:
           - 'enable'
           - 'disable'
-      use_wireguard:
-        description: 'Tambah Dukungan WireGuard'
-        required: false
-        default: false
-        type: boolean
       run_mode:
         description: 'Run Mode'
         required: true
@@ -62,13 +68,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl patch
 
-      - name: Show Selected Options
+      - name: Setup Clang Compiler
         run: |
-          echo "Kernel Version: ${{ github.event.inputs.kernel_version }}"
-          echo "Root Manager / Mode: ${{ github.event.inputs.root_manager }}"
-          echo "SUSFS Status: ${{ github.event.inputs.susfs_status }}"
-          echo "Use WireGuard: ${{ github.event.inputs.use_wireguard }}"
-          echo "Run Mode: ${{ github.event.inputs.run_mode }}"
+          echo "Menggunakan Compiler: ${{ github.event.inputs.compiler }}"
+          mkdir -p clang
+          case "${{ github.event.inputs.compiler }}" in
+            "AOSP")
+              # AOSP biasanya sudah ada di environment/path, atau kita bisa tambahkan link unduh jika perlu
+              echo "Using AOSP Clang (Prebuilt)..."
+              ;;
+            "Neutron")
+              git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
+              ;;
+            "WeebX")
+              git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
+              ;;
+            *)
+              echo "Compiler ${{ github.event.inputs.compiler }} akan menggunakan sistem bawaan."
+              ;;
+          esac
 
       - name: Clone GKI Source
         run: |
@@ -80,15 +98,12 @@ jobs:
           cd kernel_source
           case "${{ github.event.inputs.root_manager }}" in
             "KernelSU-Next")
-              echo "Applying KernelSU-Next..."
               curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main
               ;;
             "SukiSU-Ultra")
-              echo "Applying SukiSU-Ultra..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
               ;;
             "ReSukiSU")
-              echo "Applying ReSukiSU..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
               ;;
           esac
@@ -101,20 +116,20 @@ jobs:
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
           patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
-          echo "SUSFS Patch applied successfully!"
 
       - name: Build GKI Kernel
         if: github.event.inputs.run_mode == 'Build'
         run: |
           cd kernel_source
+          # Menambahkan path clang ke environment jika bukan AOSP
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
-          echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}-SUSFS-${{ github.event.inputs.susfs_status }}
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
