@@ -145,10 +145,9 @@ jobs:
             export LTO=full
           fi
 
-          # Memastikan perintah build mencari skrip yang benar di dalam common atau root folder
           if [ -f "build/build.sh" ]; then
             BUILD_CONFIG=common/build.config.aarch64 build/build.sh
-          elif [ -f "common/build.sh" ];</br>
+          elif [ -f "common/build.sh" ]; then
             BUILD_CONFIG=build.config.aarch64 common/build.sh
           elif [ -f "build.sh" ]; then
             ./build.sh
