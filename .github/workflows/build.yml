@@ -11,7 +11,7 @@ on:
         options:
           - '6.1'
       root_manager:
-        description: 'Pilih Root Manager'
+        description: 'Pilih Root Manager / Mode'
         required: true
         default: 'KernelSU-Next'
         type: choice
@@ -19,7 +19,7 @@ on:
           - 'KernelSU-Next'
           - 'SukiSU-Ultra'
           - 'ReSukiSU'
-          - 'None'
+          - 'Vanilla'
       susfs_status:
         description: 'SUSFS'
         required: true
@@ -65,17 +65,36 @@ jobs:
       - name: Show Selected Options
         run: |
           echo "Kernel Version: ${{ github.event.inputs.kernel_version }}"
-          echo "Root Manager: ${{ github.event.inputs.root_manager }}"
+          echo "Root Manager / Mode: ${{ github.event.inputs.root_manager }}"
           echo "SUSFS Status: ${{ github.event.inputs.susfs_status }}"
           echo "Use WireGuard: ${{ github.event.inputs.use_wireguard }}"
           echo "Run Mode: ${{ github.event.inputs.run_mode }}"
 
-      - name: Clone GKI Android14-6.1 Source
+      - name: Clone GKI Source
         run: |
           git clone https://android.googlesource.com/kernel/common -b android14-6.1 kernel_source --depth=1
 
+      - name: Apply Root Manager Patch
+        if: ${{ github.event.inputs.root_manager != 'Vanilla' }}
+        run: |
+          cd kernel_source
+          case "${{ github.event.inputs.root_manager }}" in
+            "KernelSU-Next")
+              echo "Applying KernelSU-Next..."
+              curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main
+              ;;
+            "SukiSU-Ultra")
+              echo "Applying SukiSU-Ultra..."
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+              ;;
+            "ReSukiSU")
+              echo "Applying ReSukiSU..."
+              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+              ;;
+          esac
+
       - name: Download and Apply SUSFS Patch
-        if: github.event.inputs.susfs_status == 'enable'
+        if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager != 'Vanilla' }}
         run: |
           cd kernel_source
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
@@ -95,7 +114,7 @@ jobs:
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}-SUSFS
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
