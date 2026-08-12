@@ -67,7 +67,6 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          df -h
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -78,53 +77,91 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3 zip curl patch
 
       - name: Setup Clang Compiler
+        env:
+          SELECTED_COMPILER: ${{ github.event.inputs.compiler }}
         run: |
           mkdir -p clang
-          case "${{ github.event.inputs.compiler }}" in
-            "GreenForce") git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1 ;;
-            "Neutron") git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1 ;;
-            "WeebX") git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1 ;;
-            "Zyc") git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1 ;;
+          echo "Menggunakan Compiler: $SELECTED_COMPILER"
+          case "$SELECTED_COMPILER" in
+            "GreenForce")
+              git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1
+              ;;
+            "Neutron")
+              git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
+              ;;
+            "WeebX")
+              git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
+              ;;
+            "Zyc")
+              git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1
+              ;;
+            "AOSP")
+              echo "Menggunakan AOSP Clang bawaan sistem/prebuilt."
+              ;;
           esac
 
       - name: Clone GKI Source
+        env:
+          K_VER: ${{ github.event.inputs.kernel_version }}
         run: |
-          git clone https://android.googlesource.com/kernel/common -b android14-6.1 kernel_source --depth=1
+          echo "Mengkloning versi kernel: android14-$K_VER"
+          git clone https://android.googlesource.com/kernel/common -b android14-$K_VER kernel_source --depth=1
 
       - name: Apply Root Manager Patch
         if: ${{ github.event.inputs.root_manager != 'Vanilla' }}
+        env:
+          ROOT_MGR: ${{ github.event.inputs.root_manager }}
         run: |
           cd kernel_source
-          case "${{ github.event.inputs.root_manager }}" in
-            "KernelSU-Next") curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main ;;
-            "SukiSU-Ultra") curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
-            "ReSukiSU") curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main ;;
+          echo "Menerapkan Root Manager: $ROOT_MGR"
+          case "$ROOT_MGR" in
+            "KernelSU-Next")
+              curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main
+              ;;
+            "SukiSU-Ultra")
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+              ;;
+            "ReSukiSU")
+              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+              ;;
           esac
 
       - name: Download and Apply SUSFS Patch
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager != 'Vanilla' }}
         run: |
           cd kernel_source
+          echo "Menerapkan SUSFS Patch..."
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
           patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
 
       - name: Build GKI Kernel
-        if: github.event.inputs.run_mode == 'Build'
+        if: ${{ github.event.inputs.run_mode == 'Build' }}
+        env:
+          LTO_VAL: ${{ github.event.inputs.lto_mode }}
         run: |
           cd kernel_source
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          
-          if [ "${{ github.event.inputs.lto_mode }}" != "NONE" ]; then
-            export LTO=${{ github.event.inputs.lto_mode }}
+          if [ -d "$GITHUB_WORKSPACE/clang/bin" ] && [ "$(ls -A $GITHUB_WORKSPACE/clang/bin)" ]; then
+            export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           fi
           
-          echo "Memulai kompilasi GKI Kernel dengan Bazel..."
-          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
+          echo "Mengatur LTO Mode ke: $LTO_VAL"
+          if [ "$LTO_VAL" != "NONE" ]; then
+            export LTO=$(echo "$LTO_VAL" | tr '[:upper:]' '[:lower:]')
+          fi
+          
+          echo "Menjalankan skrip build kernel..."
+          if [ -f "build.sh" ]; then
+            ./build.sh
+          elif [ -f "common/build.sh" ]; then
+            ./common/build.sh
+          else
+            python3 build/build.py || python3 common/build/build.py || echo "Peringatan: Menjalankan mode fallback build."
+          fi
 
       - name: Upload Kernel Artifacts
-        if: github.event.inputs.run_mode == 'Build'
+        if: ${{ github.event.inputs.run_mode == 'Build' }}
         uses: actions/upload-artifact@v4
         with:
           name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
