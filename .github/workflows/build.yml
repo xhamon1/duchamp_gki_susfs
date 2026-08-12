@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       compiler:
-        description: 'Pilih Compiler (Clang)'
+        description: 'Select Compiler (Clang)'
         required: true
         default: 'AOSP'
         type: choice
@@ -22,7 +22,7 @@ on:
         options:
           - '6.1'
       root_manager:
-        description: 'Pilih Root Manager / Mode'
+        description: 'Select Root Manager / Mode'
         required: true
         default: 'KernelSU-Next'
         type: choice
@@ -70,7 +70,7 @@ jobs:
 
       - name: Setup Clang Compiler
         run: |
-          echo "Menggunakan Compiler: ${{ github.event.inputs.compiler }}"
+          echo "Using Compiler: ${{ github.event.inputs.compiler }}"
           mkdir -p clang
           case "${{ github.event.inputs.compiler }}" in
             "AOSP")
