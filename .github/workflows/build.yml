@@ -145,12 +145,11 @@ jobs:
             export LTO=full
           fi
 
-          if [ -f "build.sh" ]; then
-            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
-          elif [ -f "common/build.sh" ]; then
-            cd common && BUILD_CONFIG=build.config.aarch64 ./build.sh
+          # Menjalankan build GKI menggunakan tools/bazel asli dari source google
+          if [ -f "tools/bazel" ]; then
+            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
           else
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || bazel run //kernel_aarch64_out_and_mismatched_modules || echo "Build script fallback"
+            build/build.sh
           fi
           echo "Build process completed!"
 
@@ -161,6 +160,5 @@ jobs:
           name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
           path: |
             kernel_source/out/kernel_aarch64/dist/*
-            kernel_source/out/*
-            kernel_source/common/out/kernel_aarch64/dist/*
+            kernel_source/out/*/by-target/*
             out/kernel_aarch64/dist/*
