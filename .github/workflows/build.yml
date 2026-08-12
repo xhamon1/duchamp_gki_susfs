@@ -10,6 +10,16 @@ on:
         type: choice
         options:
           - '6.1'
+      root_manager:
+        description: 'Pilih Root Manager'
+        required: true
+        default: 'KernelSU-Next'
+        type: choice
+        options:
+          - 'KernelSU-Next'
+          - 'SukiSU-Ultra'
+          - 'ReSukiSU'
+          - 'None'
       susfs_status:
         description: 'SUSFS'
         required: true
@@ -18,11 +28,6 @@ on:
         options:
           - 'enable'
           - 'disable'
-      use_kernelsu:
-        description: 'Gunakan KernelSU (Opsional)'
-        required: false
-        default: true
-        type: boolean
       use_wireguard:
         description: 'Tambah Dukungan WireGuard'
         required: false
@@ -60,8 +65,8 @@ jobs:
       - name: Show Selected Options
         run: |
           echo "Kernel Version: ${{ github.event.inputs.kernel_version }}"
+          echo "Root Manager: ${{ github.event.inputs.root_manager }}"
           echo "SUSFS Status: ${{ github.event.inputs.susfs_status }}"
-          echo "Use KernelSU: ${{ github.event.inputs.use_kernelsu }}"
           echo "Use WireGuard: ${{ github.event.inputs.use_wireguard }}"
           echo "Run Mode: ${{ github.event.inputs.run_mode }}"
 
@@ -77,7 +82,7 @@ jobs:
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
           patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
-          echo "SUSFS Patch applied successfully based on user input!"
+          echo "SUSFS Patch applied successfully!"
 
       - name: Build GKI Kernel
         if: github.event.inputs.run_mode == 'Build'
@@ -90,7 +95,7 @@ jobs:
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-SUSFS-Kernel
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.root_manager }}-SUSFS
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
