@@ -134,11 +134,18 @@ jobs:
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          # Apply LTO configuration if needed
+          # Configuring LTO Mode
           LTO_VAL="${{ github.event.inputs.lto_mode }}"
-          echo "Applying LTO Mode: $LTO_VAL"
+          echo "Configuring LTO mode to: $LTO_VAL"
           
-          # Run Bazel build command
+          if [ "$LTO_VAL" == "NONE" ]; then
+            export LTO=none
+          elif [ "$LTO_VAL" == "THIN" ]; then
+            export LTO=thin
+          elif [ "$LTO_VAL" == "FULL" ]; then
+            export LTO=full
+          fi
+
           tools/bazel build //common:kernel_aarch64 || bazel build //common:kernel_aarch64 || python3 build/build.py
           echo "Build process completed!"
 
@@ -146,7 +153,7 @@ jobs:
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
           path: |
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
