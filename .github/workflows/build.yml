@@ -74,8 +74,10 @@ jobs:
           mkdir -p clang
           case "${{ github.event.inputs.compiler }}" in
             "AOSP")
-              # AOSP biasanya sudah ada di environment/path, atau kita bisa tambahkan link unduh jika perlu
               echo "Using AOSP Clang (Prebuilt)..."
+              ;;
+            "Cirrus")
+              git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1
               ;;
             "Neutron")
               git clone https://github.com/Neutron-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
@@ -83,8 +85,8 @@ jobs:
             "WeebX")
               git clone https://github.com/WeebX-Toolchains/clang-llvm-prebuilt -b main clang --depth=1
               ;;
-            *)
-              echo "Compiler ${{ github.event.inputs.compiler }} akan menggunakan sistem bawaan."
+            "Zyc")
+              git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1
               ;;
           esac
 
@@ -121,9 +123,9 @@ jobs:
         if: github.event.inputs.run_mode == 'Build'
         run: |
           cd kernel_source
-          # Menambahkan path clang ke environment jika bukan AOSP
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
+          echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
         if: github.event.inputs.run_mode == 'Build'
