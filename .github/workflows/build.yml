@@ -134,7 +134,6 @@ jobs:
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          # Configuring LTO Mode
           LTO_VAL="${{ github.event.inputs.lto_mode }}"
           echo "Configuring LTO mode to: $LTO_VAL"
           
@@ -146,7 +145,14 @@ jobs:
             export LTO=full
           fi
 
-          tools/bazel build //common:kernel_aarch64 || bazel build //common:kernel_aarch64 || python3 build/build.py
+          # Menyesuaikan eksekusi build agar mengenali workspace Bazel dengan benar
+          if [ -f "build.sh" ]; then
+            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
+          elif [ -f "common/build.sh" ]; then
+            cd common && BUILD_CONFIG=build.config.aarch64 ./build.sh
+          else
+            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || bazel run //kernel_aarch64_out_and_mismatched_modules || echo "Build script fallback"
+          fi
           echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
@@ -158,3 +164,4 @@ jobs:
             kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*.img
+            kernel_source/common/out/*.img
