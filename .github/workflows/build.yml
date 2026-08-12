@@ -116,29 +116,24 @@ jobs:
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          # Pengaturan LTO
           if [ "${{ github.event.inputs.lto_mode }}" != "NONE" ]; then
             export LTO=${{ github.event.inputs.lto_mode }}
           fi
           
-          # Mencari skrip build yang tersedia dan menjalankannya
-          if [ -f "build.sh" ]; then
-            ./build.sh
-          elif [ -f "build/build.sh" ]; then
-            ./build/build.sh
-          elif [ -f "tools/bazel" ]; then
-            tools/bazel run //common:kernel_aarch64
-          else
-            echo "Skrip build tidak ditemukan, menampilkan isi direktori:"
-            ls -R
-            exit 1
-          fi
+          echo "Memulai proses build GKI..."
+          tools/bazel build //common:kernel_aarch64 || \
+          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || \
+          [ -f "build.sh" ] && ./build.sh || \
+          [ -f "common/build.sh" ] && ./common/build.sh || \
+          echo "Error: Sistem build tidak ditemukan!"
 
       - name: Upload Kernel Artifacts
         if: github.event.inputs.run_mode == 'Build'
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-Kernel-Artifacts
+          name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
           path: |
-            kernel_source/out/*/dist/*
+            kernel_source/out/kernel_aarch64/dist/*
+            kernel_source/out/*/by-target/*
             kernel_source/out/*.img
+            kernel_source/common/out/kernel_aarch64/dist/*
