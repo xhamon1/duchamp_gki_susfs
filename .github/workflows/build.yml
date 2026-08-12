@@ -1,0 +1,20 @@
+name: Build GKI Kernel with SUSFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+      runs-on: ubuntu-22.04
+      steps:
+        - name: Checkout Code
+          uses: actions/checkout@v4
+
+        - name: Prepare Environment
+          run: |
+            sudo apt-get update
+            sudo apt-get install -y bc bison flex libssl-dev libelf-dev build-essential git wget python3
+
+        - name: Info Check
+          run: |
+            echo "Environment ready for building GKI 6.1 kernel with SUSFS."
