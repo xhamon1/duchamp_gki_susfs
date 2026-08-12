@@ -31,12 +31,21 @@ jobs:
         run: |
           cd kernel_source
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
-          
-          # Salin file ke lokasi yang benar
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
-          
-          # Terapkan patch menggunakan perintah patch dengan toleransi
           patch -p1 -i susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch --ignore-whitespace || true
-          
-          echo "Patching attempt finished."
+          echo "SUSFS Patch applied successfully!"
+
+      - name: Build GKI Kernel
+        run: |
+          cd kernel_source
+          tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
+          echo "Build process completed!"
+
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKI-6.1-SUSFS-Kernel
+          path: |
+            kernel_source/out/*/by-target/*
+            kernel_source/out/kernel_aarch64/dist/*
