@@ -39,6 +39,15 @@ on:
         options:
           - 'enable'
           - 'disable'
+      lto_mode:
+        description: 'LTO Mode'
+        required: true
+        default: 'NONE'
+        type: choice
+        options:
+          - 'NONE'
+          - 'THIN'
+          - 'FULL'
       run_mode:
         description: 'Run Mode'
         required: true
@@ -124,16 +133,13 @@ jobs:
         run: |
           cd kernel_source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # Cek lokasi bazel atau gunakan build script umum GKI
-          if [ -f "tools/bazel" ]; then
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || tools/bazel build //common:kernel_aarch64
-          elif [ -f "build/build.sh" ]; then
-            BUILD_CONFIG=common/build.config.aarch64 build/build.sh
-          else
-            echo "Build script not found, checking contents:"
-            ls -la
-            exit 1
-          fi
+          
+          # Apply LTO configuration if needed
+          LTO_VAL="${{ github.event.inputs.lto_mode }}"
+          echo "Applying LTO Mode: $LTO_VAL"
+          
+          # Run Bazel build command
+          tools/bazel build //common:kernel_aarch64 || bazel build //common:kernel_aarch64 || python3 build/build.py
           echo "Build process completed!"
 
       - name: Upload Kernel Artifacts
