@@ -145,7 +145,6 @@ jobs:
             export LTO=full
           fi
 
-          # Menyesuaikan eksekusi build agar mengenali workspace Bazel dengan benar
           if [ -f "build.sh" ]; then
             BUILD_CONFIG=common/build.config.aarch64 build/build.sh
           elif [ -f "common/build.sh" ]; then
@@ -161,7 +160,7 @@ jobs:
         with:
           name: GKI-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-LTO-${{ github.event.inputs.lto_mode }}
           path: |
-            kernel_source/out/*/by-target/*
             kernel_source/out/kernel_aarch64/dist/*
-            kernel_source/out/*.img
-            kernel_source/common/out/*.img
+            kernel_source/out/*
+            kernel_source/common/out/kernel_aarch64/dist/*
+            out/kernel_aarch64/dist/*
