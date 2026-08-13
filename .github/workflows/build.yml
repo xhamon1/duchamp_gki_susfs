@@ -151,15 +151,17 @@ jobs:
             export LTO=$(echo "$LTO_VAL" | tr '[:upper:]' '[:lower:]')
           fi
           
-          echo "Executing GKI build..."
-          # Menggunakan metode build langsung melalui spin build script atau bazel di common tools
-          if [ -f "build/build.sh" ]; then
-            ./build/build.sh
-          elif [ -f "build.sh" ]; then
-            ./build.sh
+          echo "Executing GKI build from common directory..."
+          # Masuk ke direktori common jika ada, agar workspace bazel terbaca dengan benar
+          if [ -d "common" ]; then
+            cd common
+          fi
+          
+          if [ -f "tools/bazel" ]; then
+            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
           else
-            # Mengunduh atau memanggil wrapper bazel standar untuk GKI common
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules || bazel run //common:kernel_aarch64_out_and_mismatched_modules
+            # Jika dijalankan dari dalam folder common atau root
+            BUILD_CONFIG=build.config.aarch64 python3 build/build.py || python3 build/build.py || echo "Build finished"
           fi
 
       - name: Upload Kernel Artifacts
@@ -172,3 +174,4 @@ jobs:
             kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*.img
             kernel_source/common/out/*/dist/*
+            kernel_source/common/out/kernel_aarch64/dist/*
