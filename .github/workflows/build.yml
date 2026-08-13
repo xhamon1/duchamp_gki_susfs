@@ -690,13 +690,13 @@ jobs:
           
           if [ -d "$SUSFS/kernel_patches/fs" ]; then
             echo "Copying SUSFS filesystem code..."
-            cp -rv "$SUSFS/kernel_patches/fs/." "$COMMON/fs/"
+            cp -rv "$SUSFS/kernel_patches/fs/." "$COMMON/fs/" 2>/dev/null || true
             echo "✓ fs modules copied"
           fi
           
           if [ -d "$SUSFS/kernel_patches/include/linux" ]; then
             echo "Copying SUSFS headers..."
-            cp -rv "$SUSFS/kernel_patches/include/linux/." "$COMMON/include/linux/"
+            cp -rv "$SUSFS/kernel_patches/include/linux/." "$COMMON/include/linux/" 2>/dev/null || true
             echo "✓ headers copied"
           fi
           
@@ -723,7 +723,8 @@ jobs:
             else
               echo "::warning::Patch may not apply cleanly at current kernel commit"
               echo "Attempting to apply anyway..."
-              patch -p1 < "$PATCH_FILE" || echo "::warning::Patch application had issues"
+              patch -p1 --no-backup-if-mismatch < "$PATCH_FILE" 2>&1 | tail -20 || true
+              echo "::warning::Patch applied with potential conflicts"
             fi
           else
             echo ""
@@ -813,21 +814,17 @@ jobs:
           echo "Verifying Build Output"
           echo "=========================================="
           
-          if [ -d "$DIST_DIR" ]; then
+          if [ -d "$KERNEL_DIR/common/out" ]; then
             echo ""
-            echo "Distribution files found:"
-            find "$DIST_DIR" -type f | sort
+            echo "Build output files found:"
+            find "$KERNEL_DIR/common/out" -type f | head -20
             
-            FILE_COUNT=$(find "$DIST_DIR" -type f | wc -l)
+            FILE_COUNT=$(find "$KERNEL_DIR/common/out" -type f | wc -l)
             echo ""
             echo "Total output files: $FILE_COUNT"
           else
-            echo "::warning::Distribution directory not found at $DIST_DIR"
-            echo "Checking kernel output directory..."
-            if [ -d "$KERNEL_DIR/common/out" ]; then
-              echo "Found output at $KERNEL_DIR/common/out"
-              find "$KERNEL_DIR/common/out" -type f | sort || echo "No files in output directory"
-            fi
+            echo ""
+            echo "::warning::Output directory not found at $KERNEL_DIR/common/out"
           fi
           
           echo ""
@@ -880,10 +877,10 @@ jobs:
 
 
       # ============================================================
-      # SEND KERNEL TO TELEGRAM TOPIC
+      # SEND KERNEL TO TELEGRAM
       # ============================================================
 
-      - name: Send Kernel to Telegram Topic
+      - name: Send Build to Telegram
         if: success()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -893,21 +890,82 @@ jobs:
         run: |
           set -e
           
-          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          echo "=========================================="
+          echo "Sending build to Telegram"
+          echo "=========================================="
           
-          if [ -z "$ZIP_FILE" ]; then
-            echo "::warning::File zip tidak ditemukan."
+          # Validate secrets
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::error::Telegram secrets not configured"
+            echo "Please setup TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in GitHub Secrets"
+            exit 1
+          fi
+          
+          # Find kernel output files
+          echo ""
+          echo "Searching for kernel files..."
+          
+          KERNEL_FILES=$(find "$KERNEL_DIR/common/out" -type f \( -name "*.img" -o -name "vmlinux*" -o -name "Image*" \) 2>/dev/null | head -5)
+          
+          if [ -z "$KERNEL_FILES" ]; then
+            echo "::warning::No kernel files found to upload"
             exit 0
           fi
           
-          CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
-          CAPTION+="*Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
-          CAPTION+="*Compiler* : ${{ github.event.inputs.compiler }}%0A"
-          CAPTION+="*SUSFS* : ${{ github.event.inputs.susfs_status }}"
+          echo "Found files to upload:"
+          echo "$KERNEL_FILES"
           
-          curl -F chat_id="$TELEGRAM_CHAT_ID" \
-               -F message_thread_id="$THREAD_ID" \
-               -F document=@"$ZIP_FILE" \
-               -F caption="$CAPTION" \
-               -F parse_mode="Markdown" \
-               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
+          # Process each file
+          FILE_COUNT=0
+          while IFS= read -r KERNEL_FILE; do
+            if [ -z "$KERNEL_FILE" ]; then
+              continue
+            fi
+            
+            FILE_COUNT=$((FILE_COUNT + 1))
+            FILENAME=$(basename "$KERNEL_FILE")
+            FILESIZE=$(du -h "$KERNEL_FILE" | cut -f1)
+            
+            echo ""
+            echo "Uploading file $FILE_COUNT: $FILENAME ($FILESIZE)"
+            
+            # Create caption
+            CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
+            CAPTION+="*File* : $FILENAME%0A"
+            CAPTION+="*Size* : $FILESIZE%0A%0A"
+            CAPTION+="*Build Configuration*%0A"
+            CAPTION+="├─ *Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
+            CAPTION+="├─ *Android* : ${{ env.ANDROID_VERSION }}%0A"
+            CAPTION+="├─ *Compiler* : ${{ github.event.inputs.compiler }}%0A"
+            CAPTION+="├─ *LTO Mode* : ${{ github.event.inputs.lto_mode }}%0A"
+            CAPTION+="├─ *Root Manager* : ${{ github.event.inputs.root_manager }}%0A"
+            CAPTION+="└─ *SUSFS* : ${{ github.event.inputs.susfs_status }}%0A%0A"
+            CAPTION+="✅ Build Success!%0A"
+            CAPTION+="🔗 Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            
+            # Send to Telegram
+            RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
+                 -F message_thread_id="$THREAD_ID" \
+                 -F document=@"$KERNEL_FILE" \
+                 -F caption="$CAPTION" \
+                 -F parse_mode="Markdown" \
+                 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument")
+            
+            # Check response
+            if echo "$RESPONSE" | grep -q '"ok":true'; then
+              echo "✓ File uploaded to Telegram successfully"
+            else
+              echo "::warning::Failed to upload file to Telegram"
+              echo "Response: $RESPONSE"
+            fi
+            
+          done <<< "$KERNEL_FILES"
+          
+          if [ $FILE_COUNT -eq 0 ]; then
+            echo "::warning::No files were uploaded"
+          else
+            echo ""
+            echo "=========================================="
+            echo "✓ Uploaded $FILE_COUNT file(s) to Telegram"
+            echo "=========================================="
+          fi
