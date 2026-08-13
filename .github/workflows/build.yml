@@ -64,7 +64,7 @@ jobs:
   build:
     name: Build GKI Kernel with SUSFS
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 300
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -746,12 +746,28 @@ jobs:
           KERNEL_VER: ${{ github.event.inputs.kernel_version }}
           ANDROID_VER: ${{ env.ANDROID_VERSION }}
         run: |
-          set -e
+          set +e
           
           cd "$KERNEL_DIR"
           
           LTO_ARG=$(echo "$LTO_MODE" | tr '[:upper:]' '[:lower:]')
           
+          echo "=========================================="
+          echo "Pre-Build System Check"
+          echo "=========================================="
+          
+          echo "Disk space:"
+          df -h | grep -E "^/|Filesystem"
+          
+          echo ""
+          echo "Memory available:"
+          free -h
+          
+          echo ""
+          echo "CPU cores:"
+          nproc
+          
+          echo ""
           echo "=========================================="
           echo "Building GKI Kernel"
           echo "=========================================="
@@ -768,36 +784,54 @@ jobs:
           
           if [ ! -x tools/bazel ]; then
             echo "::error::tools/bazel not found or not executable"
+            ls -la tools/
             exit 1
           fi
           
           echo "✓ Bazel found"
+          echo "Bazel version:"
+          tools/bazel --version || echo "Could not get Bazel version"
           
           echo ""
           echo "Starting kernel build..."
-          echo "(This will take 30-60 minutes depending on system resources)"
+          echo "Timeout: 240 minutes"
+          echo "(Actual build typically takes 30-60 minutes)"
           echo ""
           
+          # Run build with explicit timeout and error handling
+          timeout 240m bash -c '
           tools/bazel run //build/kernel:kernel_aarch64_dist \
             --config=fast \
             --config=stamp \
-            --lto="$LTO_ARG" \
+            --lto="'"$LTO_ARG"'" \
             2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+          '
           
           BUILD_STATUS=$?
           
+          echo ""
+          echo "=========================================="
+          
           if [ $BUILD_STATUS -eq 0 ]; then
-            echo ""
-            echo "=========================================="
             echo "✓ Kernel build completed successfully!"
             echo "=========================================="
+            exit 0
+          elif [ $BUILD_STATUS -eq 124 ]; then
+            echo "::error::Build timeout (exceeded 240 minutes)"
+            echo "=========================================="
+            exit 1
           else
-            echo ""
             echo "::error::Kernel build failed with exit code $BUILD_STATUS"
+            echo "=========================================="
             echo ""
-            echo "Last 50 lines of build log:"
-            tail -50 build.log
-            exit $BUILD_STATUS
+            echo "Build log tail (last 200 lines):"
+            if [ -f build.log ]; then
+              tail -200 build.log
+            else
+              echo "Build log not found"
+            fi
+            exit 1
           fi
 
 
@@ -814,21 +848,38 @@ jobs:
           echo "Verifying Build Output"
           echo "=========================================="
           
-          if [ -d "$KERNEL_DIR/common/out" ]; then
+          # Check multiple possible output locations
+          KERNEL_OUT_PATHS=(
+            "$KERNEL_DIR/common/out"
+            "$KERNEL_DIR/out"
+            "$DIST_DIR"
+            "$KERNEL_DIR/common/dist"
+          )
+          
+          FOUND=false
+          for OUT_PATH in "${KERNEL_OUT_PATHS[@]}"; do
+            if [ -d "$OUT_PATH" ]; then
+              echo ""
+              echo "Checking $OUT_PATH:"
+              if [ -f "$OUT_PATH/vmlinux" ] || [ -f "$OUT_PATH/boot.img" ]; then
+                echo "✓ Kernel output files found!"
+                find "$OUT_PATH" -type f | head -20
+                FOUND=true
+                break
+              fi
+            fi
+          done
+          
+          if [ "$FOUND" = false ]; then
             echo ""
-            echo "Build output files found:"
-            find "$KERNEL_DIR/common/out" -type f | head -20
-            
-            FILE_COUNT=$(find "$KERNEL_DIR/common/out" -type f | wc -l)
+            echo "::error::Kernel output files not found"
             echo ""
-            echo "Total output files: $FILE_COUNT"
-          else
-            echo ""
-            echo "::warning::Output directory not found at $KERNEL_DIR/common/out"
+            echo "Searching entire kernel directory for output:"
+            find "$KERNEL_DIR" -name "vmlinux" -o -name "boot.img" -o -name "Image*" 2>/dev/null | head -20 || echo "No kernel images found"
           fi
           
           echo ""
-          echo "✓ Build output verified"
+          echo "✓ Build output verification complete"
 
 
       # ============================================================
@@ -873,7 +924,7 @@ jobs:
           name: GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
           path: ${{ env.KERNEL_DIR }}/common/out
           retention-days: 7
-          compression-level: 6
+          if-no-files-found: warn
 
 
       # ============================================================
@@ -901,11 +952,19 @@ jobs:
             exit 1
           fi
           
-          # Find kernel output files
+          # Find kernel output files in multiple locations
           echo ""
           echo "Searching for kernel files..."
           
-          KERNEL_FILES=$(find "$KERNEL_DIR/common/out" -type f \( -name "*.img" -o -name "vmlinux*" -o -name "Image*" \) 2>/dev/null | head -5)
+          KERNEL_FILES=""
+          for OUT_PATH in "$KERNEL_DIR/common/out" "$KERNEL_DIR/out" "$DIST_DIR" "$KERNEL_DIR/common/dist"; do
+            if [ -d "$OUT_PATH" ]; then
+              KERNEL_FILES=$(find "$OUT_PATH" -type f \( -name "*.img" -o -name "vmlinux*" -o -name "Image*" \) 2>/dev/null)
+              if [ -n "$KERNEL_FILES" ]; then
+                break
+              fi
+            fi
+          done
           
           if [ -z "$KERNEL_FILES" ]; then
             echo "::warning::No kernel files found to upload"
