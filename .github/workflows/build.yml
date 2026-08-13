@@ -73,6 +73,7 @@ jobs:
       KERNEL_DIR: ${{ github.workspace }}/kernel_source
       DIST_DIR: ${{ github.workspace }}/kernel_dist
 
+
     steps:
 
       # ============================================================
@@ -98,6 +99,7 @@ jobs:
           sudo rm -rf /usr/local/share/powershell
           sudo rm -rf /usr/lib/jvm
 
+          echo
           echo "=========================================="
           echo "Free space after cleanup"
           echo "=========================================="
@@ -188,6 +190,7 @@ jobs:
         run: |
           set -e
 
+          rm -rf "$GITHUB_WORKSPACE/clang"
           mkdir -p "$GITHUB_WORKSPACE/clang"
 
           echo "=========================================="
@@ -247,14 +250,14 @@ jobs:
             echo "=========================================="
 
             find "$GITHUB_WORKSPACE/clang" \
-              -maxdepth 5 \
+              -maxdepth 6 \
               -type f \
               -name clang \
               -print \
               | head -n 20
 
             if ! find "$GITHUB_WORKSPACE/clang" \
-              -maxdepth 5 \
+              -maxdepth 6 \
               -type f \
               -name clang \
               -print \
@@ -298,7 +301,7 @@ jobs:
 
           echo
           echo "Repo manifest initialized."
-          echo "The revision snapshot will be generated after repo sync."
+          echo "Revision snapshot will be generated after repo sync."
 
 
       # ============================================================
@@ -327,7 +330,7 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "Verifying Kleaf workspace"
+          echo "Verifying GKI workspace"
           echo "=========================================="
 
           REQUIRED_PATHS=(
@@ -339,22 +342,30 @@ jobs:
           )
 
           for path in "${REQUIRED_PATHS[@]}"; do
+
             if [ ! -e "$path" ]; then
               echo "::error::Required path missing after repo sync: $path"
+
               echo
-              echo "Top-level workspace:"
+              echo "Workspace:"
               ls -la
+
               echo
               echo "Repo projects:"
               repo list -p || true
+
               exit 1
             fi
 
             echo "OK: $path"
+
           done
 
           echo
-          echo "Kleaf/Bazel:"
+          echo "=========================================="
+          echo "Checking Kleaf/Bazel"
+          echo "=========================================="
+
           if [ ! -x tools/bazel ]; then
             echo "::error::tools/bazel is missing or not executable."
             ls -la tools || true
@@ -364,24 +375,32 @@ jobs:
           tools/bazel --version || true
 
           echo
-          echo "Kernel build repository:"
+          echo "=========================================="
+          echo "Kernel build repository"
+          echo "=========================================="
+
           git -C build/kernel rev-parse --show-toplevel
           git -C build/kernel rev-parse HEAD
 
           echo
-          echo "Common kernel:"
+          echo "=========================================="
+          echo "Common kernel"
+          echo "=========================================="
+
           git -C common log -1 --oneline || true
 
           echo
-          echo "Generating pinned manifest after all repo projects exist..."
+          echo "Generating pinned manifest..."
+
           repo manifest -r > "$GITHUB_WORKSPACE/repo-manifest.xml"
 
-          echo "Manifest saved to:"
+          echo
+          echo "Manifest saved:"
           echo "$GITHUB_WORKSPACE/repo-manifest.xml"
 
 
       # ============================================================
-      # VALIDATE ROOT MANAGER / SUSFS COMBINATION
+      # VALIDATE ROOT MANAGER / SUSFS
       # ============================================================
 
       - name: Validate Root Manager Selection
@@ -396,14 +415,14 @@ jobs:
           echo "SUSFS        : $SUSFS"
 
           if [ "$SUSFS" = "enable" ] && [ "$ROOT_MGR" != "KernelSU-Next" ]; then
-            echo "::error::This workflow only supports SUSFS integration with KernelSU-Next."
+            echo "::error::SUSFS integration requires KernelSU-Next."
             echo "::error::Select KernelSU-Next when SUSFS is enabled."
             exit 1
           fi
 
 
       # ============================================================
-      # INSTALL REPO TOOL AGAIN INTO PATH FOR SUBSEQUENT STEPS
+      # VERIFY REPO ENVIRONMENT
       # ============================================================
 
       - name: Verify Repo Environment
@@ -426,7 +445,7 @@ jobs:
 
 
       # ============================================================
-      # CLONE SUSFS
+      # DOWNLOAD SUSFS
       # ============================================================
 
       - name: Download SUSFS Source
@@ -456,41 +475,70 @@ jobs:
           git -C susfs4ksu log -1 --oneline
 
           echo
+          echo "=========================================="
+          echo "Available SUSFS patch files"
+          echo "=========================================="
+
+          find "$KERNEL_DIR/susfs4ksu/kernel_patches" \
+            -type f \
+            -name "*.patch" \
+            -print \
+            | sort
+
+          # --------------------------------------------------------
+          # IMPORTANT:
+          # The current SUSFS branch provides:
+          #
+          # 50_add_susfs_in_gki-android14-6.1.patch
+          #
+          # NOT:
+          #
+          # 50_add_susfs_in_gki-android14-6.1_GKI.patch
+          #
+          # --------------------------------------------------------
+
+          SUSFS_GKI_PATCH="$KERNEL_DIR/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+
+          SUSFS_KSU_PATCH="$KERNEL_DIR/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          echo
           echo "Checking required SUSFS files..."
 
-          SUSFS_FILES=(
-            "kernel_patches/50_add_susfs_in_gki-android14-6.1_GKI.patch"
-            "kernel_patches/60_scope-minimized_manual_hooks.patch"
-            "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          )
+          if [ ! -f "$SUSFS_GKI_PATCH" ]; then
+            echo "::error::Missing SUSFS GKI patch:"
+            echo "$SUSFS_GKI_PATCH"
 
-          for file in "${SUSFS_FILES[@]}"; do
+            echo
+            echo "Available patches:"
+            find "$KERNEL_DIR/susfs4ksu/kernel_patches" \
+              -type f \
+              -name "*.patch" \
+              -print \
+              | sort
 
-            if [ ! -f "$KERNEL_DIR/susfs4ksu/$file" ]; then
-              echo "::error::Missing SUSFS file:"
-              echo "$file"
+            exit 1
+          fi
 
-              echo
-              echo "Available patch files:"
-              find "$KERNEL_DIR/susfs4ksu/kernel_patches" \
-                -type f \
-                -name "*.patch" \
-                -print \
-                | sort
+          echo "OK: $SUSFS_GKI_PATCH"
 
-              exit 1
-            fi
+          if [ ! -f "$SUSFS_KSU_PATCH" ]; then
+            echo "::error::Missing SUSFS KernelSU patch:"
+            echo "$SUSFS_KSU_PATCH"
 
-            echo "OK: $file"
+            exit 1
+          fi
 
-          done
+          echo "OK: $SUSFS_KSU_PATCH"
+
+          echo
+          echo "SUSFS source verification completed."
 
 
       # ============================================================
-      # APPLY SUSFS SOURCE + GKI PATCHES
+      # APPLY SUSFS SOURCE + GKI PATCH
       # ============================================================
 
-      - name: Apply SUSFS GKI Patches
+      - name: Apply SUSFS GKI Patch
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         shell: bash
         run: |
@@ -501,9 +549,21 @@ jobs:
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
 
+          SUSFS_GKI_PATCH="$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+
           echo "=========================================="
           echo "Installing SUSFS source files"
           echo "=========================================="
+
+          if [ ! -d "$SUSFS/kernel_patches/fs" ]; then
+            echo "::error::SUSFS fs source directory is missing."
+            exit 1
+          fi
+
+          if [ ! -d "$SUSFS/kernel_patches/include/linux" ]; then
+            echo "::error::SUSFS include/linux source directory is missing."
+            exit 1
+          fi
 
           cp -a \
             "$SUSFS/kernel_patches/fs/." \
@@ -518,44 +578,57 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "Copying SUSFS patches"
+          echo "Copying GKI SUSFS patch"
           echo "=========================================="
 
-          cp -p \
-            "$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1_GKI.patch" \
-            "$COMMON/"
+          cp -f \
+            "$SUSFS_GKI_PATCH" \
+            "$COMMON/50_add_susfs_in_gki-android14-6.1.patch"
 
-          cp -p \
-            "$SUSFS/kernel_patches/60_scope-minimized_manual_hooks.patch" \
-            "$COMMON/"
+          cd "$COMMON"
+
+          echo
+          echo "=========================================="
+          echo "Testing GKI SUSFS patch"
+          echo "=========================================="
+
+          if ! patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < 50_add_susfs_in_gki-android14-6.1.patch; then
+
+            echo "::error::GKI SUSFS patch cannot be applied cleanly."
+
+            echo
+            echo "Kernel commit:"
+            git log -1 --oneline || true
+
+            echo
+            echo "Patch:"
+            sed -n '1,260p' \
+              50_add_susfs_in_gki-android14-6.1.patch
+
+            exit 1
+          fi
+
+          echo
+          echo "Dry-run successful."
 
           echo
           echo "=========================================="
           echo "Applying GKI SUSFS patch"
           echo "=========================================="
 
-          cd "$COMMON"
-
           patch \
+            --forward \
+            --batch \
             -p1 \
-            -u \
-            -i 50_add_susfs_in_gki-android14-6.1_GKI.patch
+            < 50_add_susfs_in_gki-android14-6.1.patch
 
           echo
           echo "GKI SUSFS patch applied successfully."
-
-          echo
-          echo "=========================================="
-          echo "Applying manual hooks patch"
-          echo "=========================================="
-
-          patch \
-            -p1 \
-            -u \
-            -i 60_scope-minimized_manual_hooks.patch
-
-          echo
-          echo "Manual hooks patch applied successfully."
 
 
       # ============================================================
@@ -658,6 +731,7 @@ jobs:
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
           KSU_DIR="$COMMON/KernelSU"
+
           KSU_PATCH="$SUSFS/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
 
           echo "=========================================="
@@ -667,7 +741,15 @@ jobs:
           if [ ! -d "$KSU_DIR" ]; then
             echo "::error::KernelSU directory was not found:"
             echo "$KSU_DIR"
-            find "$COMMON" -maxdepth 2 -type d -iname '*kernelsu*' -print || true
+
+            echo
+            echo "Searching for KernelSU:"
+            find "$COMMON" \
+              -maxdepth 3 \
+              -type d \
+              -iname "*kernelsu*" \
+              -print || true
+
             exit 1
           fi
 
@@ -677,35 +759,58 @@ jobs:
             exit 1
           fi
 
-          cp -f "$KSU_PATCH" "$KSU_DIR/10_enable_susfs_for_ksu.patch"
+          cp -f \
+            "$KSU_PATCH" \
+            "$KSU_DIR/10_enable_susfs_for_ksu.patch"
 
           cd "$KSU_DIR"
 
+          echo
           echo "KernelSU directory:"
           pwd
 
           echo
-          echo "Testing patch applicability..."
+          echo "KernelSU HEAD:"
+          git log -1 --oneline || true
 
-          if ! patch --dry-run --forward --batch -p1               < 10_enable_susfs_for_ksu.patch; then
+          echo
+          echo "Testing SUSFS KernelSU patch..."
+
+          if ! patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < 10_enable_susfs_for_ksu.patch; then
+
             echo "::error::SUSFS KernelSU patch cannot be applied cleanly."
-            echo
-            echo "KernelSU HEAD:"
-            git log -1 --oneline || true
+
             echo
             echo "Patch:"
-            sed -n '1,220p' 10_enable_susfs_for_ksu.patch
+            sed -n '1,260p' \
+              10_enable_susfs_for_ksu.patch
+
             exit 1
           fi
 
-          patch --forward --batch -p1             < 10_enable_susfs_for_ksu.patch
+          echo
+          echo "Dry-run successful."
+
+          echo
+          echo "Applying SUSFS KernelSU patch..."
+
+          patch \
+            --forward \
+            --batch \
+            -p1 \
+            < 10_enable_susfs_for_ksu.patch
 
           echo
           echo "SUSFS KernelSU patch applied successfully."
 
 
       # ============================================================
-      # REMOVE PROTECTED EXPORTS / PATCH FILES
+      # FINALIZE SUSFS
       # ============================================================
 
       - name: Finalize SUSFS Integration
@@ -723,33 +828,6 @@ jobs:
           echo "=========================================="
 
           echo
-          echo "Removing protected exports..."
-
-          if [ -f "$COMMON/BUILD.bazel" ]; then
-
-            sed -i \
-              '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' \
-              "$COMMON/BUILD.bazel"
-
-          fi
-
-          echo
-          echo "Removing protected export files..."
-
-          rm -f \
-            "$COMMON"/android/abi_gki_protected_exports_*
-
-
-          echo
-          echo "Removing temporary SUSFS patches..."
-
-          rm -f \
-            "$COMMON/50_add_susfs_in_gki-android14-6.1_GKI.patch" \
-            "$COMMON/60_scope-minimized_manual_hooks.patch" \
-            "$COMMON/KernelSU/10_enable_susfs_for_ksu.patch"
-
-
-          echo
           echo "Checking KernelSU..."
 
           if [ ! -d "$COMMON/KernelSU" ]; then
@@ -757,14 +835,27 @@ jobs:
             exit 1
           fi
 
-          find "$COMMON/KernelSU" \
-            -maxdepth 2 \
-            -type f \
-            | head -n 30
-
+          echo "KernelSU found."
 
           echo
           echo "Checking SUSFS source..."
+
+          SUSFS_SOURCE_COUNT="$(
+            find "$COMMON" \
+              -type f \
+              \( \
+                -name "susfs*.c" \
+                -o -name "susfs*.h" \
+              \) \
+              | wc -l
+          )"
+
+          echo "SUSFS source files found: $SUSFS_SOURCE_COUNT"
+
+          if [ "$SUSFS_SOURCE_COUNT" -eq 0 ]; then
+            echo "::error::No SUSFS source files were found."
+            exit 1
+          fi
 
           find "$COMMON" \
             -type f \
@@ -775,9 +866,8 @@ jobs:
             -print \
             | sort
 
-
           echo
-          echo "Checking SUSFS config..."
+          echo "Checking SUSFS configuration..."
 
           grep -R \
             "CONFIG_KSU_SUSFS" \
@@ -787,6 +877,16 @@ jobs:
             --include="*.h" \
             2>/dev/null \
             | head -n 50 || true
+
+          echo
+          echo "Removing temporary patch files..."
+
+          rm -f \
+            "$COMMON/50_add_susfs_in_gki-android14-6.1.patch" \
+            "$COMMON/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          echo
+          echo "SUSFS finalization completed."
 
 
       # ============================================================
@@ -814,6 +914,7 @@ jobs:
 
           echo
           echo "KernelSU:"
+
           if [ -d common/KernelSU ]; then
             echo "KernelSU installed."
           else
@@ -822,10 +923,22 @@ jobs:
 
           echo
           echo "Kleaf:"
+
           if [ -x tools/bazel ]; then
             echo "Kleaf/Bazel available."
           else
             echo "::error::tools/bazel is missing."
+            exit 1
+          fi
+
+          echo
+          echo "Build/kernel:"
+
+          if [ -d build/kernel ]; then
+            echo "build/kernel exists."
+            git -C build/kernel rev-parse HEAD || true
+          else
+            echo "::error::build/kernel is missing."
             exit 1
           fi
 
@@ -887,6 +1000,7 @@ jobs:
           echo "BUILD CONFIGURATION"
           echo "=========================================="
 
+          echo
           echo "Kernel       : Android 14 / 6.1"
           echo "Compiler     : $SELECTED_COMPILER"
           echo "Root Manager : $ROOT_MGR"
@@ -922,25 +1036,31 @@ jobs:
           mkdir -p "$DIST_DIR"
 
           case "$LTO_MODE" in
+
             "NONE")
               LTO_VALUE="none"
               ;;
+
             "THIN")
               LTO_VALUE="thin"
               ;;
+
             "FULL")
               LTO_VALUE="full"
               ;;
+
             *)
               echo "::error::Invalid LTO mode: $LTO_MODE"
               exit 1
               ;;
+
           esac
 
           echo "=========================================="
           echo "Starting GKI build"
           echo "=========================================="
 
+          echo
           echo "Compiler : $SELECTED_COMPILER"
           echo "LTO      : $LTO_VALUE"
           echo "Dist dir : $DIST_DIR"
@@ -966,14 +1086,18 @@ jobs:
             CLANG_BIN=""
 
             if [ -x "$CLANG_ROOT/bin/clang" ]; then
+
               CLANG_BIN="$CLANG_ROOT/bin"
+
             else
 
-              FOUND_CLANG="$(find "$CLANG_ROOT" \
-                -type f \
-                -name clang \
-                -perm -111 \
-                | head -n 1 || true)"
+              FOUND_CLANG="$(
+                find "$CLANG_ROOT" \
+                  -type f \
+                  -name clang \
+                  -perm -111 \
+                  | head -n 1 || true
+              )"
 
               if [ -n "$FOUND_CLANG" ]; then
                 CLANG_BIN="$(dirname "$FOUND_CLANG")"
@@ -983,10 +1107,17 @@ jobs:
 
             if [ -z "$CLANG_BIN" ]; then
               echo "::error::Unable to locate custom Clang."
-              find "$CLANG_ROOT" -type f -name clang -print | head -n 50 || true
+
+              find "$CLANG_ROOT" \
+                -type f \
+                -name clang \
+                -print \
+                | head -n 50 || true
+
               exit 1
             fi
 
+            echo
             echo "Custom Clang bin:"
             echo "$CLANG_BIN"
 
@@ -1049,6 +1180,7 @@ jobs:
 
           echo
           echo "Files:"
+
           find "$DIST_DIR" \
             -maxdepth 3 \
             -type f \
@@ -1085,7 +1217,10 @@ jobs:
           done
 
           if [ "$FOUND_IMAGE" -eq 0 ]; then
-            echo "::warning::No standard Image file found at the top level."
+
+            echo "::warning::No standard Image file found at top level."
+
+            echo
             echo "Searching recursively..."
 
             find "$DIST_DIR" \
@@ -1097,6 +1232,7 @@ jobs:
                 -o -name "boot.img" \
               \) \
               -print
+
           fi
 
 
@@ -1121,24 +1257,31 @@ jobs:
             echo "=========================================="
             echo "GKI BUILD MANIFEST"
             echo "=========================================="
+
             echo
             echo "Repository : ${{ github.repository }}"
             echo "Commit     : ${{ github.sha }}"
             echo "Run ID     : ${{ github.run_id }}"
+
             echo
             echo "Kernel     : Android 14 / 6.1"
             echo "Compiler   : $SELECTED_COMPILER"
             echo "Root       : $ROOT_MGR"
             echo "SUSFS      : $SUSFS"
             echo "LTO        : $LTO_MODE"
+
             echo
             echo "Kernel commit:"
-            git -C "$KERNEL_DIR/common" log -1 --oneline
+
+            git -C "$KERNEL_DIR/common" \
+              log -1 --oneline
+
             echo
             echo "SUSFS commit:"
 
             if [ -d "$KERNEL_DIR/susfs4ksu/.git" ]; then
-              git -C "$KERNEL_DIR/susfs4ksu" log -1 --oneline
+              git -C "$KERNEL_DIR/susfs4ksu" \
+                log -1 --oneline
             else
               echo "N/A"
             fi
@@ -1147,13 +1290,15 @@ jobs:
             echo "KernelSU commit:"
 
             if [ -d "$KERNEL_DIR/common/KernelSU/.git" ]; then
-              git -C "$KERNEL_DIR/common/KernelSU" log -1 --oneline
+              git -C "$KERNEL_DIR/common/KernelSU" \
+                log -1 --oneline
             else
               echo "N/A"
             fi
 
             echo
             echo "=========================================="
+
           } > "$MANIFEST"
 
           cat "$MANIFEST"
@@ -1192,6 +1337,7 @@ jobs:
           echo "=========================================="
           echo "BUILD SUMMARY"
           echo "=========================================="
+
           echo
           echo "Kernel       : Android 14 / 6.1"
           echo "Compiler     : $SELECTED_COMPILER"
@@ -1199,18 +1345,22 @@ jobs:
           echo "SUSFS        : $SUSFS"
           echo "LTO          : $LTO_MODE"
           echo "Run Mode     : $RUN_MODE"
+
           echo
           echo "=========================================="
 
           if [ -d "$DIST_DIR" ]; then
+
             echo
             echo "Artifacts:"
+
             find "$DIST_DIR" \
               -maxdepth 2 \
               -type f \
               -printf '%p\n' \
               | sort \
               | head -n 200
+
           fi
 
           echo
