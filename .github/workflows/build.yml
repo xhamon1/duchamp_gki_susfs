@@ -878,7 +878,12 @@ jobs:
           retention-days: 7
           compression-level: 6
 
-            - name: Send Kernel to Telegram Topic
+
+      # ============================================================
+      # SEND KERNEL TO TELEGRAM TOPIC
+      # ============================================================
+
+      - name: Send Kernel to Telegram Topic
         if: success()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -888,7 +893,6 @@ jobs:
         run: |
           set -e
           
-          # Ganti "out" dengan folder output kernel Anda jika berbeda (misal: common/out atau dist)
           ZIP_FILE=$(find . -name "*.zip" | head -n 1)
           
           if [ -z "$ZIP_FILE" ]; then
@@ -897,7 +901,7 @@ jobs:
           fi
           
           CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
-          CAPTION+="*Kernel* : Linux 6.1%0A"
+          CAPTION+="*Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
           CAPTION+="*Compiler* : ${{ github.event.inputs.compiler }}%0A"
           CAPTION+="*SUSFS* : ${{ github.event.inputs.susfs_status }}"
           
