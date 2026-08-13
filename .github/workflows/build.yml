@@ -212,10 +212,10 @@ jobs:
 
 
       # ============================================================
-      # SMART AUTOMATIC COMPATIBLE COMMIT FINDER
+      # SMART FAST CHECKOUT (OTOMATIS & TIDAK STUCK)
       # ============================================================
 
-      - name: Find Compatible Kernel Commit Automatically
+      - name: Smart Auto Checkout Compatible Commit
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         shell: bash
         run: |
@@ -226,34 +226,32 @@ jobs:
           
           cd "$COMMON"
 
-          echo "Memeriksa kompatibilitas patch SUSFS pada HEAD terbaru..."
+          echo "Mengecek patch pada HEAD terbaru..."
           if patch --dry-run --forward --batch -p1 < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
             echo "HEAD sudah kompatibel secara otomatis!"
             exit 0
           fi
 
-          echo "HEAD belum kompatibel. Mencari commit kompatibel terdekat di riwayat..."
-          
+          echo "HEAD belum kompatibel, mencari commit stabil terdekat..."
           REMOTE="$(git remote | head -n1)"
-          git fetch --depth=300 "$REMOTE" || git fetch --unshallow "$REMOTE"
+          
+          git fetch --depth=150 "$REMOTE"
 
-          FOUND_COMMIT=""
-          for COMMIT in $(git log --first-parent --format='%H' -n 250); do
-            git checkout --quiet --detach "$COMMIT"
-            if patch --dry-run --forward --batch -p1 < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
-              FOUND_COMMIT="$COMMIT"
+          FOUND=""
+          for c in $(git log --first-parent --format='%H' -n 100); do
+            if git checkout --quiet --detach "$c" && patch --dry-run --forward --batch -p1 < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+              FOUND="$c"
               break
             fi
           done
 
-          if [ -z "$FOUND_COMMIT" ]; then
-            echo "::error::Tidak ditemukan commit yang kompatibel dalam batas pencarian."
+          if [ -z "$FOUND" ]; then
+            echo "::error::Tidak ditemukan commit kompatibel dalam batas aman."
             exit 1
           fi
 
-          echo "Commit kompatibel otomatis ditemukan:"
-          git log -1 --oneline "$FOUND_COMMIT"
-          git checkout --quiet --detach "$FOUND_COMMIT"
+          echo "Berhasil menemukan commit otomatis:"
+          git log -1 --oneline "$FOUND"
 
 
       # ============================================================
