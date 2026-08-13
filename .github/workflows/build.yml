@@ -13,16 +13,6 @@ on:
           - '5.15'
           - '6.1'
 
-      android_version:
-        description: 'Select Android Version'
-        required: true
-        default: '14'
-        type: choice
-        options:
-          - '13'
-          - '14'
-          - '15'
-
       compiler:
         description: 'Select Compiler (Clang)'
         required: true
@@ -64,6 +54,10 @@ on:
         options:
           - 'enable'
           - 'disable'
+
+
+env:
+  ANDROID_VERSION: '14'
 
 
 jobs:
@@ -323,7 +317,7 @@ jobs:
           export PATH="$HOME/.bin:$PATH"
           
           KERNEL_VER="${{ github.event.inputs.kernel_version }}"
-          ANDROID_VER="${{ github.event.inputs.android_version }}"
+          ANDROID_VER="${{ env.ANDROID_VERSION }}"
           
           echo "=========================================="
           echo "Initializing Kernel Repository"
@@ -451,7 +445,7 @@ jobs:
       # DOWNLOAD SUSFS
       # ============================================================
 
-      - name: Download SUSFS (Latest Main Branch)
+      - name: Download SUSFS
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         run: |
           set -e
@@ -465,14 +459,42 @@ jobs:
           rm -rf susfs4ksu
           
           echo ""
-          echo "Cloning SUSFS from main branch (latest version)..."
+          echo "Cloning SUSFS repository..."
+          
+          # Clone without specifying branch to get default
           git clone \
             --depth=1 \
             --no-tags \
-            --single-branch \
-            -b main \
             https://gitlab.com/pershoot/susfs4ksu.git \
             susfs4ksu
+          
+          cd susfs4ksu
+          
+          # Get list of available branches
+          echo ""
+          echo "Fetching available branches..."
+          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/.*\///' | sort)
+          
+          echo "Available branches:"
+          echo "$BRANCHES"
+          
+          # Try to checkout best available branch
+          BRANCH_FOUND=false
+          for BRANCH in "next-susfs" "master" "main" "develop"; do
+            if echo "$BRANCHES" | grep -q "^$BRANCH$"; then
+              echo ""
+              echo "Checking out branch: $BRANCH"
+              git checkout "$BRANCH" 2>/dev/null
+              BRANCH_FOUND=true
+              break
+            fi
+          done
+          
+          if [ "$BRANCH_FOUND" = false ]; then
+            echo "::warning::Could not find preferred branches, using default"
+          fi
+          
+          cd "$KERNEL_DIR"
           
           echo ""
           echo "SUSFS version:"
@@ -485,11 +507,11 @@ jobs:
           
           echo ""
           echo "Kernel patches:"
-          find susfs4ksu/kernel_patches -maxdepth 1 -name "*.patch" -type f | sort
+          find susfs4ksu/kernel_patches -maxdepth 1 -name "*.patch" -type f | sort || echo "No patches found"
           
           echo ""
           echo "Source directories:"
-          find susfs4ksu/kernel_patches -maxdepth 1 -type d | sort
+          find susfs4ksu/kernel_patches -maxdepth 1 -type d | sort || echo "No directories found"
           
           echo ""
           echo "✓ SUSFS downloaded successfully"
@@ -531,6 +553,7 @@ jobs:
           
           if [ ! -d "KernelSU-Next/kernel" ]; then
             echo "::error::KernelSU-Next kernel directory not found"
+            echo "Available directories:"
             ls -la KernelSU-Next/
             exit 1
           fi
@@ -686,7 +709,7 @@ jobs:
           
           if [ -n "$PATCH_FILE" ]; then
             echo ""
-            echo "Found patch: $PATCH_FILE"
+            echo "Found patch: $(basename $PATCH_FILE)"
             
             cd "$COMMON"
             
@@ -698,8 +721,9 @@ jobs:
               patch -p1 < "$PATCH_FILE"
               echo "✓ SUSFS patch applied successfully"
             else
-              echo "::warning::Patch may not apply cleanly, attempting anyway..."
-              patch -p1 < "$PATCH_FILE" || echo "::warning::Patch application had issues but continuing..."
+              echo "::warning::Patch may not apply cleanly at current kernel commit"
+              echo "Attempting to apply anyway..."
+              patch -p1 < "$PATCH_FILE" || echo "::warning::Patch application had issues"
             fi
           else
             echo ""
@@ -719,7 +743,7 @@ jobs:
         env:
           LTO_MODE: ${{ github.event.inputs.lto_mode }}
           KERNEL_VER: ${{ github.event.inputs.kernel_version }}
-          ANDROID_VER: ${{ github.event.inputs.android_version }}
+          ANDROID_VER: ${{ env.ANDROID_VERSION }}
         run: |
           set -e
           
@@ -798,7 +822,12 @@ jobs:
             echo ""
             echo "Total output files: $FILE_COUNT"
           else
-            echo "::warning::Distribution directory not found"
+            echo "::warning::Distribution directory not found at $DIST_DIR"
+            echo "Checking kernel output directory..."
+            if [ -d "$KERNEL_DIR/common/out" ]; then
+              echo "Found output at $KERNEL_DIR/common/out"
+              find "$KERNEL_DIR/common/out" -type f | sort || echo "No files in output directory"
+            fi
           fi
           
           echo ""
@@ -820,10 +849,9 @@ jobs:
           echo ""
           echo "Status: ✓ SUCCESS"
           echo "Build Date: $(date)"
-          echo "Build Duration: Check GitHub Actions logs"
           echo ""
           echo "Configuration:"
-          echo "  Android Version: ${{ github.event.inputs.android_version }}"
+          echo "  Android Version: ${{ env.ANDROID_VERSION }}"
           echo "  Kernel Version: ${{ github.event.inputs.kernel_version }}"
           echo "  Compiler: ${{ github.event.inputs.compiler }}"
           echo "  LTO Mode: ${{ github.event.inputs.lto_mode }}"
@@ -845,7 +873,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
+          name: GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
           path: ${{ env.KERNEL_DIR }}/common/out
           retention-days: 7
           compression-level: 6
