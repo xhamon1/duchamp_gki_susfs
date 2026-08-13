@@ -151,18 +151,9 @@ jobs:
             export LTO=$(echo "$LTO_VAL" | tr '[:upper:]' '[:lower:]')
           fi
           
-          echo "Executing GKI build from common directory..."
-          # Masuk ke direktori common jika ada, agar workspace bazel terbaca dengan benar
-          if [ -d "common" ]; then
-            cd common
-          fi
-          
-          if [ -f "tools/bazel" ]; then
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
-          else
-            # Jika dijalankan dari dalam folder common atau root
-            BUILD_CONFIG=build.config.aarch64 python3 build/build.py || python3 build/build.py || echo "Build finished"
-          fi
+          echo "Starting GKI compilation..."
+          # Eksekusi build menggunakan build.sh bawaan kernel common Android 14
+          BUILD_CONFIG=common/build.config.aarch64 python3 common/build/build.py
 
       - name: Upload Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
