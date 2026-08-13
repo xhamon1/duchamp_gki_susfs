@@ -81,7 +81,7 @@ jobs:
           SELECTED_COMPILER: ${{ github.event.inputs.compiler }}
         run: |
           mkdir -p clang
-          echo "Menggunakan Compiler: $SELECTED_COMPILER"
+          echo "Setting up compiler: $SELECTED_COMPILER"
           case "$SELECTED_COMPILER" in
             "GreenForce")
               git clone https://github.com/greenforce-project/greenforce_clang -b main clang --depth=1
@@ -96,7 +96,7 @@ jobs:
               git clone https://github.com/ZyCromerZ/Clang -b master clang --depth=1
               ;;
             "AOSP")
-              echo "Menggunakan AOSP Clang bawaan sistem/prebuilt."
+              echo "Using default AOSP prebuilt Clang."
               ;;
           esac
 
@@ -104,7 +104,7 @@ jobs:
         env:
           K_VER: ${{ github.event.inputs.kernel_version }}
         run: |
-          echo "Mengkloning versi kernel: android14-$K_VER"
+          echo "Cloning kernel version: android14-$K_VER"
           git clone https://android.googlesource.com/kernel/common -b android14-$K_VER kernel_source --depth=1
 
       - name: Apply Root Manager Patch
@@ -113,7 +113,7 @@ jobs:
           ROOT_MGR: ${{ github.event.inputs.root_manager }}
         run: |
           cd kernel_source
-          echo "Menerapkan Root Manager: $ROOT_MGR"
+          echo "Applying root manager: $ROOT_MGR"
           case "$ROOT_MGR" in
             "KernelSU-Next")
               curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s main
@@ -130,7 +130,7 @@ jobs:
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager != 'Vanilla' }}
         run: |
           cd kernel_source
-          echo "Menerapkan SUSFS Patch..."
+          echo "Applying SUSFS patch..."
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/* include/
@@ -146,18 +146,21 @@ jobs:
             export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           fi
           
-          echo "Mengatur LTO Mode ke: $LTO_VAL"
+          echo "Configuring LTO mode to: $LTO_VAL"
           if [ "$LTO_VAL" != "NONE" ]; then
             export LTO=$(echo "$LTO_VAL" | tr '[:upper:]' '[:lower:]')
           fi
           
-          echo "Menjalankan skrip build kernel..."
+          echo "Executing kernel build script..."
           if [ -f "build.sh" ]; then
             ./build.sh
           elif [ -f "common/build.sh" ]; then
             ./common/build.sh
+          elif [ -f "build/build.sh" ]; then
+            ./build/build.sh
           else
-            python3 build/build.py || python3 common/build/build.py || echo "Peringatan: Menjalankan mode fallback build."
+            # Explicitly run the GKI build command using python or build script fallback
+            BUILD_CONFIG=common/build.config.aarch64 python3 build/build.py || python3 common/build/build.py || tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
           fi
 
       - name: Upload Kernel Artifacts
