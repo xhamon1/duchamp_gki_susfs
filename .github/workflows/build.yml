@@ -69,289 +69,962 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       KERNEL_DIR: ${{ github.workspace }}/kernel_source
-      OUT_DIR: ${{ github.workspace }}/kernel_source/out
+      DIST_DIR: ${{ github.workspace }}/kernel_dist
 
 
     steps:
 
+      # ============================================================
+      # CHECKOUT REPOSITORY
+      # ============================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # MAXIMIZE BUILD SPACE
+      # ============================================================
 
       - name: Free Up Disk Space
         run: |
           set -e
+          
+          echo "=========================================="
           echo "Disk space before cleanup:"
+          echo "=========================================="
           df -h
+          
           echo ""
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" /usr/local/lib/android/sdk /usr/local/share/powershell /usr/lib/jvm
+          echo "Removing unnecessary files..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/local/lib/android/sdk
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/lib/jvm
+          
+          echo ""
+          echo "=========================================="
           echo "Disk space after cleanup:"
+          echo "=========================================="
           df -h
+
+
+      # ============================================================
+      # INSTALL BUILD DEPENDENCIES
+      # ============================================================
 
       - name: Install Build Dependencies
         run: |
           set -e
+          
+          echo "=========================================="
+          echo "Installing build dependencies..."
+          echo "=========================================="
+          
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl flex git git-lfs libelf-dev libncurses-dev libssl-dev jq libxml2-utils lz4 openssl patch python3 python3-pip rsync unzip wget zip xz-utils zstd openjdk-17-jdk
+          
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            git-lfs \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            jq \
+            libxml2-utils \
+            lz4 \
+            openssl \
+            patch \
+            python3 \
+            python3-pip \
+            rsync \
+            unzip \
+            wget \
+            zip \
+            xz-utils \
+            zstd \
+            openjdk-17-jdk
+          
           git lfs install --skip-repo
-          echo "✓ Dependencies installed"
+          
+          echo "✓ All dependencies installed"
+
+
+      # ============================================================
+      # SETUP REPO TOOL
+      # ============================================================
 
       - name: Setup Repo Tool
         run: |
           set -e
+          
+          echo "=========================================="
+          echo "Setting up Repo tool..."
+          echo "=========================================="
+          
           mkdir -p "$HOME/.bin"
-          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/.bin/repo"
+          
+          curl -L \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/.bin/repo"
+          
           chmod +x "$HOME/.bin/repo"
+          
           echo "$HOME/.bin" >> $GITHUB_PATH
+          
           export PATH="$HOME/.bin:$PATH"
+          
+          echo "Repo version:"
           repo --version
+          
           echo "✓ Repo tool ready"
+
+
+      # ============================================================
+      # SETUP CLANG COMPILER
+      # ============================================================
 
       - name: Setup Clang Compiler
         env:
           COMPILER: ${{ github.event.inputs.compiler }}
         run: |
           set -e
+          
+          echo "=========================================="
+          echo "Setting up Clang Compiler"
+          echo "=========================================="
+          echo "Selected Compiler: $COMPILER"
+          echo "=========================================="
+          
           CLANG_DIR="${{ github.workspace }}/clang"
           mkdir -p "$CLANG_DIR"
           
-          download_release() {
+          # Function to download and extract release tarball
+          download_release_tarball() {
             local REPO=$1
             local DEST=$2
-            curl -sL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.assets[0].browser_download_url' | xargs -I {} curl -Ls {} -o /tmp/clang.tar.zst
-            zstd -d -f --long=31 /tmp/clang.tar.zst -o /tmp/clang.tar
-            tar -xf /tmp/clang.tar -C "$DEST"
-            rm /tmp/clang.tar*
+            
+            echo ""
+            echo "Downloading latest release from: $REPO"
+            
+            # Try to get latest release
+            ASSET_URL=$(curl -sL \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/releases/latest" \
+              | jq -r '.assets[]?.browser_download_url' \
+              | grep -Ei '\.(tar\.zst|tar\.xz|tar\.gz|tgz)$' \
+              | head -n1)
+            
+            # If not found, try all releases
+            if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+              echo "No latest release found, checking all releases..."
+              ASSET_URL=$(curl -sL \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/releases" \
+                | jq -r '.[0].assets[]?.browser_download_url' \
+                | grep -Ei '\.(tar\.zst|tar\.xz|tar\.gz|tgz)$' \
+                | head -n1)
+            fi
+            
+            if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+              echo "::error::Could not find release tarball for $REPO"
+              exit 1
+            fi
+            
+            echo "Download URL: $ASSET_URL"
+            
+            FILENAME=$(basename "$ASSET_URL")
+            curl -Ls "$ASSET_URL" -o "$FILENAME"
+            
+            echo "Extracting $FILENAME..."
+            case "$FILENAME" in
+              *.tar.zst)
+                zstd -d -f --long=31 "$FILENAME" -o "${FILENAME%.zst}"
+                tar -xf "${FILENAME%.zst}" -C "$DEST"
+                rm -f "${FILENAME%.zst}"
+                ;;
+              *.tar.xz|*.tar.gz|*.tgz)
+                tar -xf "$FILENAME" -C "$DEST"
+                ;;
+              *)
+                echo "::error::Unrecognized archive format: $FILENAME"
+                exit 1
+                ;;
+            esac
+            
+            rm -f "$FILENAME"
+            echo "Extraction complete"
           }
           
+          # Download based on compiler selection
           case "$COMPILER" in
-            GreenForce) download_release "greenforce-project/clang-llvm" "$CLANG_DIR" ;;
-            Neutron) download_release "Neutron-Toolchains/clang-build-catalogue" "$CLANG_DIR" ;;
-            WeebX) download_release "XSans0/WeebX-Clang" "$CLANG_DIR" ;;
-            Zyc) download_release "ZyCromerZ/Clang" "$CLANG_DIR" ;;
-            AOSP) echo "Using AOSP Clang" ;;
+            GreenForce)
+              echo "Downloading GreenForce Clang..."
+              download_release_tarball "greenforce-project/clang-llvm" "$CLANG_DIR"
+              ;;
+            Neutron)
+              echo "Downloading Neutron Clang..."
+              download_release_tarball "Neutron-Toolchains/clang-build-catalogue" "$CLANG_DIR"
+              ;;
+            WeebX)
+              echo "Downloading WeebX Clang..."
+              download_release_tarball "XSans0/WeebX-Clang" "$CLANG_DIR"
+              ;;
+            Zyc)
+              echo "Downloading ZyCromerZ Clang..."
+              download_release_tarball "ZyCromerZ/Clang" "$CLANG_DIR"
+              ;;
+            AOSP)
+              echo "Using AOSP/Kleaf Clang (resolved automatically)"
+              ;;
+            *)
+              echo "::error::Unknown compiler: $COMPILER"
+              exit 1
+              ;;
           esac
           
-          if [ "$COMPILER" != "AOSP" ] && ! find "$CLANG_DIR" -name clang -type f | grep -q .; then
-            echo "::error::Clang not found"
-            exit 1
+          # Verify clang binary for custom toolchains
+          if [ "$COMPILER" != "AOSP" ]; then
+            echo ""
+            echo "Verifying Clang installation..."
+            
+            if ! find "$CLANG_DIR" -maxdepth 6 -name clang -type f | grep -q .; then
+              echo "::error::Clang binary not found after extraction"
+              exit 1
+            fi
+            
+            echo "✓ Clang found and ready"
           fi
-          echo "✓ Compiler ready"
+
+
+      # ============================================================
+      # INITIALIZE KERNEL REPOSITORY
+      # ============================================================
 
       - name: Initialize Kernel Repository
         run: |
           set -e
+          
           export PATH="$HOME/.bin:$PATH"
+          
           KERNEL_VER="${{ github.event.inputs.kernel_version }}"
           ANDROID_VER="${{ env.ANDROID_VERSION }}"
+          
+          echo "=========================================="
+          echo "Initializing Kernel Repository"
+          echo "=========================================="
+          echo "Android Version: $ANDROID_VER"
+          echo "Kernel Version: $KERNEL_VER"
+          echo "Branch: common-android$ANDROID_VER-$KERNEL_VER"
+          echo "=========================================="
           
           rm -rf "$KERNEL_DIR"
           mkdir -p "$KERNEL_DIR"
           cd "$KERNEL_DIR"
           
-          repo init -u https://android.googlesource.com/kernel/manifest -b "common-android$ANDROID_VER-$KERNEL_VER" --depth=1 --no-clone-bundle --no-repo-verify
+          echo ""
+          echo "Running repo init..."
+          repo init \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b "common-android$ANDROID_VER-$KERNEL_VER" \
+            --depth=1 \
+            --no-clone-bundle \
+            --no-repo-verify
+          
+          echo ""
           echo "✓ Repository initialized"
+
+
+      # ============================================================
+      # SYNC KERNEL SOURCE
+      # ============================================================
 
       - name: Sync Kernel Source
         run: |
           set -e
+          
           export PATH="$HOME/.bin:$PATH"
+          
           cd "$KERNEL_DIR"
           
-          echo "Syncing kernel source..."
-          repo sync -c --no-tags --no-clone-bundle --optimized-fetch --prune --force-sync -j2
+          echo "=========================================="
+          echo "Syncing Kernel Source"
+          echo "=========================================="
           
-          for path in common build/kernel tools prebuilts external; do
-            [ -e "$path" ] || { echo "::error::Missing: $path"; exit 1; }
+          echo ""
+          echo "Running repo sync (this may take a while)..."
+          repo sync \
+            -c \
+            --no-tags \
+            --no-clone-bundle \
+            --optimized-fetch \
+            --prune \
+            --force-sync \
+            -j2
+          
+          echo ""
+          echo "=========================================="
+          echo "Verifying Kernel Workspace"
+          echo "=========================================="
+          
+          REQUIRED_PATHS=(
+            "common"
+            "build/kernel"
+            "tools"
+            "prebuilts"
+            "external"
+          )
+          
+          for path in "${REQUIRED_PATHS[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "::error::Required path missing: $path"
+              exit 1
+            fi
+            echo "✓ $path"
           done
-          echo "✓ Kernel synced"
+          
+          echo ""
+          echo "=========================================="
+          echo "Kernel Repository Info"
+          echo "=========================================="
+          
+          echo ""
+          echo "Common kernel commit:"
+          git -C common log -1 --oneline
+          
+          echo ""
+          echo "Build kernel commit:"
+          git -C build/kernel log -1 --oneline
+          
+          echo ""
+          echo "✓ Kernel source synced successfully"
+
+
+      # ============================================================
+      # VALIDATE CONFIGURATION
+      # ============================================================
 
       - name: Validate Configuration
         env:
           ROOT_MGR: ${{ github.event.inputs.root_manager }}
           SUSFS: ${{ github.event.inputs.susfs_status }}
         run: |
+          set -e
+          
+          echo "=========================================="
+          echo "Validating Configuration"
+          echo "=========================================="
+          
+          echo "Root Manager: $ROOT_MGR"
+          echo "SUSFS Status: $SUSFS"
+          echo "Compiler: ${{ github.event.inputs.compiler }}"
+          echo "LTO Mode: ${{ github.event.inputs.lto_mode }}"
+          
+          # Validate SUSFS + Root Manager compatibility
           if [ "$SUSFS" = "enable" ] && [ "$ROOT_MGR" != "KernelSU-Next" ]; then
-            echo "::error::SUSFS requires KernelSU-Next"
+            echo ""
+            echo "::error::SUSFS integration requires KernelSU-Next"
+            echo "::error::Please select KernelSU-Next when SUSFS is enabled"
             exit 1
           fi
-          echo "✓ Config valid"
+          
+          echo ""
+          echo "✓ Configuration is valid"
+
+
+      # ============================================================
+      # DOWNLOAD SUSFS
+      # ============================================================
 
       - name: Download SUSFS
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
+          
+          echo "=========================================="
+          echo "Downloading SUSFS"
+          echo "=========================================="
+          
           rm -rf susfs4ksu
-          git clone --depth=1 --no-tags https://gitlab.com/pershoot/susfs4ksu.git susfs4ksu
+          
+          echo ""
+          echo "Cloning SUSFS repository..."
+          
+          # Clone without specifying branch to get default
+          git clone \
+            --depth=1 \
+            --no-tags \
+            https://gitlab.com/pershoot/susfs4ksu.git \
+            susfs4ksu
+          
           cd susfs4ksu
-          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/.*\///')
+          
+          # Get list of available branches
+          echo ""
+          echo "Fetching available branches..."
+          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/.*\///' | sort)
+          
+          echo "Available branches:"
+          echo "$BRANCHES"
+          
+          # Try to checkout best available branch
+          BRANCH_FOUND=false
           for BRANCH in "next-susfs" "master" "main" "develop"; do
             if echo "$BRANCHES" | grep -q "^$BRANCH$"; then
-              git checkout "$BRANCH" 2>/dev/null && break
+              echo ""
+              echo "Checking out branch: $BRANCH"
+              git checkout "$BRANCH" 2>/dev/null
+              BRANCH_FOUND=true
+              break
             fi
           done
+          
+          if [ "$BRANCH_FOUND" = false ]; then
+            echo "::warning::Could not find preferred branches, using default"
+          fi
+          
           cd "$KERNEL_DIR"
-          echo "✓ SUSFS downloaded"
+          
+          echo ""
+          echo "SUSFS version:"
+          git -C susfs4ksu log -1 --oneline
+          
+          echo ""
+          echo "=========================================="
+          echo "SUSFS Contents"
+          echo "=========================================="
+          
+          echo ""
+          echo "Kernel patches:"
+          find susfs4ksu/kernel_patches -maxdepth 1 -name "*.patch" -type f | sort || echo "No patches found"
+          
+          echo ""
+          echo "Source directories:"
+          find susfs4ksu/kernel_patches -maxdepth 1 -type d | sort || echo "No directories found"
+          
+          echo ""
+          echo "✓ SUSFS downloaded successfully"
 
-      - name: Install KernelSU-Next (next-susfs)
+
+      # ============================================================
+      # INSTALL KERNELSU-NEXT WITH SUSFS
+      # ============================================================
+
+      - name: Install KernelSU-Next (next-susfs Branch)
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
-          git clone --depth=1 --no-tags --single-branch -b next-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
-          [ -d "KernelSU-Next/kernel" ] || { echo "::error::KernelSU-Next kernel not found"; exit 1; }
+          
+          echo "=========================================="
+          echo "Installing KernelSU-Next with SUSFS Support"
+          echo "=========================================="
+          
+          echo ""
+          echo "Cloning KernelSU-Next from next-susfs branch..."
+          echo "(This branch has SUSFS already integrated)"
+          
+          git clone \
+            --depth=1 \
+            --no-tags \
+            --single-branch \
+            -b next-susfs \
+            https://github.com/pershoot/KernelSU-Next.git \
+            KernelSU-Next
+          
+          echo ""
+          echo "KernelSU-Next version:"
+          git -C KernelSU-Next log -1 --oneline
+          
+          echo ""
+          echo "Verifying KernelSU-Next structure..."
+          
+          if [ ! -d "KernelSU-Next/kernel" ]; then
+            echo "::error::KernelSU-Next kernel directory not found"
+            echo "Available directories:"
+            ls -la KernelSU-Next/
+            exit 1
+          fi
+          
+          echo "✓ kernel directory found"
+          
+          echo ""
+          echo "Creating symlink: common/drivers/kernelsu -> KernelSU-Next/kernel"
           ln -sf "$KERNEL_DIR/KernelSU-Next/kernel" "$KERNEL_DIR/common/drivers/kernelsu"
-          echo "✓ KernelSU-Next installed"
+          
+          echo ""
+          echo "✓ KernelSU-Next with SUSFS installed"
+
+
+      # ============================================================
+      # INSTALL KERNELSU-NEXT STANDARD (WITHOUT SUSFS)
+      # ============================================================
 
       - name: Install KernelSU-Next (Standard)
         if: ${{ github.event.inputs.susfs_status == 'disable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s
+          
+          echo "=========================================="
+          echo "Installing Standard KernelSU-Next"
+          echo "=========================================="
+          
+          echo ""
+          echo "Downloading setup script..."
+          curl -LSs \
+            "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s
+          
+          echo ""
+          echo "Verifying installation..."
+          
+          if [ ! -d "$KERNEL_DIR/KernelSU-Next" ] && [ ! -d "$KERNEL_DIR/KernelSU" ]; then
+            echo "::warning::KernelSU-Next directory not found in expected locations"
+          fi
+          
+          echo ""
           echo "✓ KernelSU-Next installed"
+
+
+      # ============================================================
+      # INSTALL SUKISU-ULTRA
+      # ============================================================
 
       - name: Install SukiSU-Ultra
         if: ${{ github.event.inputs.root_manager == 'SukiSU-Ultra' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          
+          echo "=========================================="
+          echo "Installing SukiSU-Ultra"
+          echo "=========================================="
+          
+          echo ""
+          echo "Downloading setup script..."
+          curl -LSs \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+            | bash -s main
+          
+          echo ""
           echo "✓ SukiSU-Ultra installed"
+
+
+      # ============================================================
+      # INSTALL RESUKISU
+      # ============================================================
 
       - name: Install ReSukiSU
         if: ${{ github.event.inputs.root_manager == 'ReSukiSU' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+          
+          echo "=========================================="
+          echo "Installing ReSukiSU"
+          echo "=========================================="
+          
+          echo ""
+          echo "Downloading setup script..."
+          curl -LSs \
+            "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
+            | bash
+          
+          echo ""
           echo "✓ ReSukiSU installed"
+
+
+      # ============================================================
+      # VANILLA KERNEL (NO ROOT MANAGER)
+      # ============================================================
+
+      - name: Vanilla Kernel (No Root Manager)
+        if: ${{ github.event.inputs.root_manager == 'Vanilla' }}
+        run: |
+          set -e
+          
+          echo "=========================================="
+          echo "Building Vanilla Kernel"
+          echo "=========================================="
+          echo ""
+          echo "No root manager will be integrated"
+          echo "✓ Proceeding with vanilla kernel build"
+
+
+      # ============================================================
+      # APPLY SUSFS TO KERNEL
+      # ============================================================
 
       - name: Apply SUSFS to Kernel
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         run: |
           set -e
+          
           cd "$KERNEL_DIR"
+          
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
           
+          echo "=========================================="
+          echo "Applying SUSFS to Kernel"
+          echo "=========================================="
+          
+          echo ""
+          echo "Copying SUSFS source files..."
+          
           if [ -d "$SUSFS/kernel_patches/fs" ]; then
+            echo "Copying SUSFS filesystem code..."
             cp -rv "$SUSFS/kernel_patches/fs/." "$COMMON/fs/" 2>/dev/null || true
+            echo "✓ fs modules copied"
           fi
+          
           if [ -d "$SUSFS/kernel_patches/include/linux" ]; then
+            echo "Copying SUSFS headers..."
             cp -rv "$SUSFS/kernel_patches/include/linux/." "$COMMON/include/linux/" 2>/dev/null || true
+            echo "✓ headers copied"
           fi
+          
+          echo ""
+          echo "=========================================="
+          echo "Looking for SUSFS patch files"
+          echo "=========================================="
           
           PATCH_FILE=$(find "$SUSFS/kernel_patches" -maxdepth 1 -name "*.patch" -type f | head -n1)
+          
           if [ -n "$PATCH_FILE" ]; then
+            echo ""
+            echo "Found patch: $(basename $PATCH_FILE)"
+            
             cd "$COMMON"
-            patch -p1 --no-backup-if-mismatch < "$PATCH_FILE" 2>&1 || true
+            
+            echo ""
+            echo "Testing patch compatibility..."
+            
+            if patch --dry-run -p1 < "$PATCH_FILE" > /dev/null 2>&1; then
+              echo "Patch is compatible, applying..."
+              patch -p1 < "$PATCH_FILE"
+              echo "✓ SUSFS patch applied successfully"
+            else
+              echo "::warning::Patch may not apply cleanly at current kernel commit"
+              echo "Attempting to apply anyway..."
+              patch -p1 --no-backup-if-mismatch < "$PATCH_FILE" 2>&1 | tail -20 || true
+              echo "::warning::Patch applied with potential conflicts"
+            fi
+          else
+            echo ""
+            echo "::warning::No SUSFS patch files found"
+            echo "SUSFS source files were copied but kernel patches not applied"
           fi
-          echo "✓ SUSFS applied"
+          
+          echo ""
+          echo "✓ SUSFS preparation complete"
+
+
+      # ============================================================
+      # BUILD KERNEL
+      # ============================================================
 
       - name: Build GKI Kernel
+        env:
+          LTO_MODE: ${{ github.event.inputs.lto_mode }}
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+          ANDROID_VER: ${{ env.ANDROID_VERSION }}
         run: |
           set +e
+          
           cd "$KERNEL_DIR"
           
-          echo "Building GKI Kernel..."
-          echo "Config: Android ${{ env.ANDROID_VERSION }}, Kernel ${{ github.event.inputs.kernel_version }}, Compiler ${{ github.event.inputs.compiler }}, LTO ${{ github.event.inputs.lto_mode }}"
+          LTO_ARG=$(echo "$LTO_MODE" | tr '[:upper:]' '[:lower:]')
           
-          LTO_ARG=$(echo "${{ github.event.inputs.lto_mode }}" | tr '[:upper:]' '[:lower:]')
+          echo "=========================================="
+          echo "Pre-Build System Check"
+          echo "=========================================="
           
-          timeout 240m tools/bazel run //build/kernel:kernel_aarch64_dist \
-            --config=fast --config=stamp --lto="$LTO_ARG" 2>&1 | tee build.log
+          echo "Disk space:"
+          df -h | grep -E "^/|Filesystem"
+          
+          echo ""
+          echo "Memory available:"
+          free -h
+          
+          echo ""
+          echo "CPU cores:"
+          nproc
+          
+          echo ""
+          echo "=========================================="
+          echo "Building GKI Kernel"
+          echo "=========================================="
+          echo "Android Version: $ANDROID_VER"
+          echo "Kernel Version: $KERNEL_VER"
+          echo "Compiler: ${{ github.event.inputs.compiler }}"
+          echo "LTO Mode: $LTO_ARG"
+          echo "Root Manager: ${{ github.event.inputs.root_manager }}"
+          echo "SUSFS: ${{ github.event.inputs.susfs_status }}"
+          echo "=========================================="
+          
+          echo ""
+          echo "Verifying build tools..."
+          
+          if [ ! -x tools/bazel ]; then
+            echo "::error::tools/bazel not found or not executable"
+            ls -la tools/
+            exit 1
+          fi
+          
+          echo "✓ Bazel found"
+          echo "Bazel version:"
+          tools/bazel --version || echo "Could not get Bazel version"
+          
+          echo ""
+          echo "Starting kernel build..."
+          echo "Timeout: 240 minutes"
+          echo "(Actual build typically takes 30-60 minutes)"
+          echo ""
+          
+          # Run build with explicit timeout and error handling
+          timeout 240m bash -c '
+          tools/bazel run //build/kernel:kernel_aarch64_dist \
+            --config=fast \
+            --config=stamp \
+            --lto="'"$LTO_ARG"'" \
+            2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+          '
           
           BUILD_STATUS=$?
           
+          echo ""
+          echo "=========================================="
+          
           if [ $BUILD_STATUS -eq 0 ]; then
-            echo "✓ Build succeeded"
+            echo "✓ Kernel build completed successfully!"
+            echo "=========================================="
             exit 0
+          elif [ $BUILD_STATUS -eq 124 ]; then
+            echo "::error::Build timeout (exceeded 240 minutes)"
+            echo "=========================================="
+            exit 1
           else
-            echo "Build failed, checking for outputs..."
-            find "$KERNEL_DIR" -type f -size +10M \( -name "*.img" -o -name "vmlinux" \) 2>/dev/null | head -20
-            exit 0
+            echo "::error::Kernel build failed with exit code $BUILD_STATUS"
+            echo "=========================================="
+            echo ""
+            echo "Build log tail (last 200 lines):"
+            if [ -f build.log ]; then
+              tail -200 build.log
+            else
+              echo "Build log not found"
+            fi
+            exit 1
           fi
 
-      - name: Find Build Output
+
+      # ============================================================
+      # VERIFY BUILD OUTPUT
+      # ============================================================
+
+      - name: Verify Build Output
+        if: success()
         run: |
           set -e
-          cd "$KERNEL_DIR"
           
-          echo "Searching for kernel output..."
+          echo "=========================================="
+          echo "Verifying Build Output"
+          echo "=========================================="
           
-          # Create output directory if missing
-          mkdir -p "$OUT_DIR"
+          # Check multiple possible output locations
+          KERNEL_OUT_PATHS=(
+            "$KERNEL_DIR/common/out"
+            "$KERNEL_DIR/out"
+            "$DIST_DIR"
+            "$KERNEL_DIR/common/dist"
+          )
           
-          # Search and copy outputs
-          find . -type f \( -name "boot.img" -o -name "vmlinux" -o -name "Image*" -o -name "system*.img" \) -size +1M 2>/dev/null | while read -r file; do
-            echo "Found: $file"
-            cp "$file" "$OUT_DIR/" 2>/dev/null || true
+          FOUND=false
+          for OUT_PATH in "${KERNEL_OUT_PATHS[@]}"; do
+            if [ -d "$OUT_PATH" ]; then
+              echo ""
+              echo "Checking $OUT_PATH:"
+              if [ -f "$OUT_PATH/vmlinux" ] || [ -f "$OUT_PATH/boot.img" ]; then
+                echo "✓ Kernel output files found!"
+                find "$OUT_PATH" -type f | head -20
+                FOUND=true
+                break
+              fi
+            fi
           done
           
-          # List output directory
-          if [ -d "$OUT_DIR" ] && [ "$(ls -A $OUT_DIR)" ]; then
-            echo "✓ Output files found:"
-            ls -lh "$OUT_DIR"
-          else
-            echo "⚠ No output files found (this is expected if build skipped compilation)"
-            mkdir -p "$OUT_DIR"
-            touch "$OUT_DIR/BUILD_LOG"
-            cp build.log "$OUT_DIR/BUILD_LOG" 2>/dev/null || true
+          if [ "$FOUND" = false ]; then
+            echo ""
+            echo "::error::Kernel output files not found"
+            echo ""
+            echo "Searching entire kernel directory for output:"
+            find "$KERNEL_DIR" -name "vmlinux" -o -name "boot.img" -o -name "Image*" 2>/dev/null | head -20 || echo "No kernel images found"
           fi
+          
+          echo ""
+          echo "✓ Build output verification complete"
+
+
+      # ============================================================
+      # GENERATE BUILD SUMMARY
+      # ============================================================
+
+      - name: Generate Build Summary
+        if: success()
+        run: |
+          set -e
+          
+          echo "=========================================="
+          echo "BUILD SUMMARY"
+          echo "=========================================="
+          echo ""
+          echo "Status: ✓ SUCCESS"
+          echo "Build Date: $(date)"
+          echo ""
+          echo "Configuration:"
+          echo "  Android Version: ${{ env.ANDROID_VERSION }}"
+          echo "  Kernel Version: ${{ github.event.inputs.kernel_version }}"
+          echo "  Compiler: ${{ github.event.inputs.compiler }}"
+          echo "  LTO Mode: ${{ github.event.inputs.lto_mode }}"
+          echo "  Root Manager: ${{ github.event.inputs.root_manager }}"
+          echo "  SUSFS: ${{ github.event.inputs.susfs_status }}"
+          echo ""
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo ""
+          echo "=========================================="
+
+
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
 
       - name: Upload Build Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
-          path: ${{ env.OUT_DIR }}
+          path: ${{ env.KERNEL_DIR }}/common/out
           retention-days: 7
           if-no-files-found: warn
 
+
+      # ============================================================
+      # SEND KERNEL TO TELEGRAM
+      # ============================================================
+
       - name: Send Build to Telegram
-        if: always()
+        if: success()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           THREAD_ID: '4'
+        shell: bash
         run: |
-          set +e
+          set -e
           
+          echo "=========================================="
+          echo "Sending build to Telegram"
+          echo "=========================================="
+          
+          # Validate secrets
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "::warning::Telegram secrets not configured"
-            exit 0
+            echo "::error::Telegram secrets not configured"
+            echo "Please setup TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in GitHub Secrets"
+            exit 1
           fi
           
-          KERNEL_FILES=$(find "${{ env.OUT_DIR }}" -type f \( -name "*.img" -o -name "vmlinux" -o -name "Image*" \) 2>/dev/null)
+          # Find kernel output files in multiple locations
+          echo ""
+          echo "Searching for kernel files..."
+          
+          KERNEL_FILES=""
+          for OUT_PATH in "$KERNEL_DIR/common/out" "$KERNEL_DIR/out" "$DIST_DIR" "$KERNEL_DIR/common/dist"; do
+            if [ -d "$OUT_PATH" ]; then
+              KERNEL_FILES=$(find "$OUT_PATH" -type f \( -name "*.img" -o -name "vmlinux*" -o -name "Image*" \) 2>/dev/null)
+              if [ -n "$KERNEL_FILES" ]; then
+                break
+              fi
+            fi
+          done
           
           if [ -z "$KERNEL_FILES" ]; then
-            echo "No kernel files to upload"
+            echo "::warning::No kernel files found to upload"
             exit 0
           fi
           
-          while IFS= read -r FILE; do
-            [ -z "$FILE" ] && continue
+          echo "Found files to upload:"
+          echo "$KERNEL_FILES"
+          
+          # Process each file
+          FILE_COUNT=0
+          while IFS= read -r KERNEL_FILE; do
+            if [ -z "$KERNEL_FILE" ]; then
+              continue
+            fi
             
-            FILENAME=$(basename "$FILE")
-            FILESIZE=$(du -h "$FILE" | cut -f1)
+            FILE_COUNT=$((FILE_COUNT + 1))
+            FILENAME=$(basename "$KERNEL_FILE")
+            FILESIZE=$(du -h "$KERNEL_FILE" | cut -f1)
             
-            CAPTION="✨ *GKI Kernel Build* ✨%0A"
-            CAPTION+="*File* : $FILENAME ($FILESIZE)%0A%0A"
-            CAPTION+="*Config*%0A"
-            CAPTION+="├─ Kernel: Linux ${{ github.event.inputs.kernel_version }}%0A"
-            CAPTION+="├─ Android: ${{ env.ANDROID_VERSION }}%0A"
-            CAPTION+="├─ Compiler: ${{ github.event.inputs.compiler }}%0A"
-            CAPTION+="├─ LTO: ${{ github.event.inputs.lto_mode }}%0A"
-            CAPTION+="├─ Manager: ${{ github.event.inputs.root_manager }}%0A"
-            CAPTION+="└─ SUSFS: ${{ github.event.inputs.susfs_status }}%0A%0A"
+            echo ""
+            echo "Uploading file $FILE_COUNT: $FILENAME ($FILESIZE)"
+            
+            # Create caption
+            CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
+            CAPTION+="*File* : $FILENAME%0A"
+            CAPTION+="*Size* : $FILESIZE%0A%0A"
+            CAPTION+="*Build Configuration*%0A"
+            CAPTION+="├─ *Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
+            CAPTION+="├─ *Android* : ${{ env.ANDROID_VERSION }}%0A"
+            CAPTION+="├─ *Compiler* : ${{ github.event.inputs.compiler }}%0A"
+            CAPTION+="├─ *LTO Mode* : ${{ github.event.inputs.lto_mode }}%0A"
+            CAPTION+="├─ *Root Manager* : ${{ github.event.inputs.root_manager }}%0A"
+            CAPTION+="└─ *SUSFS* : ${{ github.event.inputs.susfs_status }}%0A%0A"
+            CAPTION+="✅ Build Success!%0A"
             CAPTION+="🔗 Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             
-            curl -F chat_id="$TELEGRAM_CHAT_ID" \
+            # Send to Telegram
+            RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
                  -F message_thread_id="$THREAD_ID" \
-                 -F document=@"$FILE" \
+                 -F document=@"$KERNEL_FILE" \
                  -F caption="$CAPTION" \
                  -F parse_mode="Markdown" \
-                 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" 2>/dev/null
+                 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument")
             
-            echo "Uploaded: $FILENAME"
+            # Check response
+            if echo "$RESPONSE" | grep -q '"ok":true'; then
+              echo "✓ File uploaded to Telegram successfully"
+            else
+              echo "::warning::Failed to upload file to Telegram"
+              echo "Response: $RESPONSE"
+            fi
+            
           done <<< "$KERNEL_FILES"
+          
+          if [ $FILE_COUNT -eq 0 ]; then
+            echo "::warning::No files were uploaded"
+          else
+            echo ""
+            echo "=========================================="
+            echo "✓ Uploaded $FILE_COUNT file(s) to Telegram"
+            echo "=========================================="
+          fi
