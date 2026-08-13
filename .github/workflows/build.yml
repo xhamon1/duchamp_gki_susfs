@@ -878,7 +878,7 @@ jobs:
           retention-days: 7
           compression-level: 6
 
-      - name: Send Kernel to Telegram Topic
+            - name: Send Kernel to Telegram Topic
         if: success()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -887,7 +887,10 @@ jobs:
         shell: bash
         run: |
           set -e
-          ZIP_FILE=$(find "$DIST_DIR" -name "*.zip" | head -n 1)
+          
+          # Ganti "out" dengan folder output kernel Anda jika berbeda (misal: common/out atau dist)
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          
           if [ -z "$ZIP_FILE" ]; then
             echo "::warning::File zip tidak ditemukan."
             exit 0
@@ -904,4 +907,3 @@ jobs:
                -F caption="$CAPTION" \
                -F parse_mode="Markdown" \
                "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
-
