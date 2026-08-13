@@ -212,26 +212,48 @@ jobs:
 
 
       # ============================================================
-      # FAST CHECKOUT TO COMPATIBLE COMMIT (PANGKAS WAKTU 4 MENIT)
+      # SMART AUTOMATIC COMPATIBLE COMMIT FINDER
       # ============================================================
 
-      - name: Fast Checkout Compatible Commit
+      - name: Find Compatible Kernel Commit Automatically
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         shell: bash
         run: |
           set -e
           COMMON="$KERNEL_DIR/common"
+          SUSFS="$KERNEL_DIR/susfs4ksu"
+          SUSFS_GKI_PATCH="$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+          
           cd "$COMMON"
 
-          TARGET_COMMIT="0e9240ec2c"
+          echo "Memeriksa kompatibilitas patch SUSFS pada HEAD terbaru..."
+          if patch --dry-run --forward --batch -p1 < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+            echo "HEAD sudah kompatibel secara otomatis!"
+            exit 0
+          fi
+
+          echo "HEAD belum kompatibel. Mencari commit kompatibel terdekat di riwayat..."
+          
           REMOTE="$(git remote | head -n1)"
+          git fetch --depth=300 "$REMOTE" || git fetch --unshallow "$REMOTE"
 
-          echo "Mengunduh histori secara langsung ke commit: $TARGET_COMMIT"
-          git fetch --depth=300 "$REMOTE" "$TARGET_COMMIT" || git fetch --unshallow "$REMOTE"
-          git checkout --quiet --detach "$TARGET_COMMIT"
+          FOUND_COMMIT=""
+          for COMMIT in $(git log --first-parent --format='%H' -n 250); do
+            git checkout --quiet --detach "$COMMIT"
+            if patch --dry-run --forward --batch -p1 < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+              FOUND_COMMIT="$COMMIT"
+              break
+            fi
+          done
 
-          echo "Berhasil berada di commit:"
-          git log -1 --oneline
+          if [ -z "$FOUND_COMMIT" ]; then
+            echo "::error::Tidak ditemukan commit yang kompatibel dalam batas pencarian."
+            exit 1
+          fi
+
+          echo "Commit kompatibel otomatis ditemukan:"
+          git log -1 --oneline "$FOUND_COMMIT"
+          git checkout --quiet --detach "$FOUND_COMMIT"
 
 
       # ============================================================
@@ -258,7 +280,7 @@ jobs:
 
 
       # ============================================================
-      # APPLY ROOT MANAGER (LENGKAP SESUAI OPSI MENU)
+      # APPLY ROOT MANAGER
       # ============================================================
 
       - name: Apply Root Manager
