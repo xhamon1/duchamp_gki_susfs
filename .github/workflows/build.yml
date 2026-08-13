@@ -139,6 +139,7 @@ jobs:
             libelf-dev \
             libncurses-dev \
             libssl-dev \
+            jq \
             libxml2-utils \
             lz4 \
             openssl \
@@ -150,6 +151,7 @@ jobs:
             wget \
             zip \
             xz-utils \
+            zstd \
             openjdk-17-jdk
 
           git lfs install --skip-repo
@@ -197,37 +199,113 @@ jobs:
           echo "Selected compiler: $SELECTED_COMPILER"
           echo "=========================================="
 
+          # ------------------------------------------------------------
+          # NOTE:
+          # None of these projects ship usable prebuilt clang binaries
+          # directly inside their git repository anymore (git-cloning
+          # them only gets you scripts/metadata, not a working
+          # toolchain). They all now publish prebuilt toolchains as
+          # tarball assets on their GitHub "Releases" page instead.
+          #
+          # This function grabs the most recent release of a given
+          # repo, finds the first tar.gz/tar.xz/tar.zst asset, and
+          # extracts it into $GITHUB_WORKSPACE/clang.
+          # ------------------------------------------------------------
+
+          download_latest_release_tarball() {
+
+            REPO="$1"
+            DEST_DIR="$2"
+
+            echo
+            echo "Repo: $REPO"
+            echo "Looking up latest release..."
+
+            ASSET_URL="$(
+              curl -sL \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/releases/latest" \
+                | jq -r '.assets[]?.browser_download_url' \
+                | grep -Ei '\.(tar\.zst|tar\.xz|tar\.gz|tgz)$' \
+                | head -n1
+            )"
+
+            if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+
+              echo "No asset found via /releases/latest, checking full release list..."
+
+              ASSET_URL="$(
+                curl -sL \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$REPO/releases" \
+                  | jq -r '.[0].assets[]?.browser_download_url' \
+                  | grep -Ei '\.(tar\.zst|tar\.xz|tar\.gz|tgz)$' \
+                  | head -n1
+              )"
+
+            fi
+
+            if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+              echo "::error::Could not find a downloadable release tarball for $REPO"
+              exit 1
+            fi
+
+            echo "Download: $ASSET_URL"
+
+            FILENAME="$(basename "$ASSET_URL")"
+
+            curl -Ls "$ASSET_URL" -o "$FILENAME"
+
+            echo "Extracting $FILENAME ..."
+
+            case "$FILENAME" in
+
+              *.tar.zst)
+                zstd -d -f --long=31 "$FILENAME" -o "${FILENAME%.zst}"
+                tar -xf "${FILENAME%.zst}" -C "$DEST_DIR"
+                rm -f "${FILENAME%.zst}"
+                ;;
+
+              *.tar.xz|*.tar.gz|*.tgz)
+                tar -xf "$FILENAME" -C "$DEST_DIR"
+                ;;
+
+              *)
+                echo "::error::Unrecognized archive format: $FILENAME"
+                exit 1
+                ;;
+
+            esac
+
+            rm -f "$FILENAME"
+
+            echo "Extraction complete."
+
+          }
+
           case "$SELECTED_COMPILER" in
 
             "GreenForce")
-              git clone \
-                --depth=1 \
-                --single-branch \
-                https://github.com/greenforce-project/greenforce_clang.git \
+              download_latest_release_tarball \
+                "greenforce-project/clang-llvm" \
                 "$GITHUB_WORKSPACE/clang"
               ;;
 
             "Neutron")
-              git clone \
-                --depth=1 \
-                --single-branch \
-                https://github.com/Neutron-Toolchains/clang-llvm-prebuilt.git \
+              download_latest_release_tarball \
+                "Neutron-Toolchains/clang-build-catalogue" \
                 "$GITHUB_WORKSPACE/clang"
               ;;
 
             "WeebX")
-              git clone \
-                --depth=1 \
-                --single-branch \
-                https://github.com/WeebX-Toolchains/clang-llvm-prebuilt.git \
+              download_latest_release_tarball \
+                "XSans0/WeebX-Clang" \
                 "$GITHUB_WORKSPACE/clang"
               ;;
 
             "Zyc")
-              git clone \
-                --depth=1 \
-                --single-branch \
-                https://github.com/ZyCromerZ/Clang.git \
+              download_latest_release_tarball \
+                "ZyCromerZ/Clang" \
                 "$GITHUB_WORKSPACE/clang"
               ;;
 
@@ -263,7 +341,8 @@ jobs:
               -print \
               | grep -q .; then
 
-              echo "::error::clang binary was not found."
+              echo "::error::clang binary was not found after extracting the release tarball."
+              echo "::error::The toolchain's release layout may have changed upstream."
               exit 1
             fi
 
@@ -564,7 +643,6 @@ jobs:
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
           SUSFS_GKI_PATCH="$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
-          BRANCH="common-android14-$K_VER"
           MAX_COMMITS_TO_TRY=300
 
           cd "$COMMON"
@@ -595,7 +673,7 @@ jobs:
 
             echo
             echo "=========================================="
-            echo "Deepening shallow checkout of '$BRANCH'"
+            echo "Deepening shallow checkout of 'common'"
             echo "=========================================="
 
             REMOTE="$(git remote | head -n1)"
@@ -607,12 +685,38 @@ jobs:
 
             echo "Remote: $REMOTE"
 
-            if ! git fetch --depth="$MAX_COMMITS_TO_TRY" "$REMOTE" "$BRANCH"; then
-              echo "::error::Failed to fetch deeper history for '$BRANCH'."
+            CURRENT_SHA="$(git rev-parse HEAD)"
+
+            # The manifest branch name (e.g. "common-android14-6.1") is not
+            # guaranteed to match the actual ref name on this project's
+            # remote, so we deliberately avoid fetching by branch name.
+            # Try, in order:
+            #   1) deepen using the refspec 'repo' already configured
+            #   2) fetch more history directly by the current commit SHA
+            #   3) fully unshallow as a last resort (slow, but always works)
+
+            if git fetch --deepen="$MAX_COMMITS_TO_TRY" "$REMOTE"; then
+
+              echo "Deepened using configured remote refspec."
+
+            elif git fetch --depth="$MAX_COMMITS_TO_TRY" "$REMOTE" "$CURRENT_SHA"; then
+
+              echo "Deepened by fetching current commit SHA directly."
+
+            elif git fetch --unshallow "$REMOTE"; then
+
+              echo "Fully unshallowed (this may take a while)."
+
+            else
+
+              echo "::error::Failed to fetch deeper history for the common kernel checkout."
               exit 1
+
             fi
 
-            git checkout --quiet --detach FETCH_HEAD
+            # None of the fallbacks above move HEAD, they only make more
+            # history reachable from the commit we already have checked out.
+            git checkout --quiet --detach "$CURRENT_SHA"
 
             echo
             echo "Commits available locally now:"
