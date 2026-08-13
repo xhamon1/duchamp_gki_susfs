@@ -56,10 +56,6 @@ on:
           - 'disable'
 
 
-env:
-  ANDROID_VERSION: '14'
-
-
 jobs:
   build:
     name: Build GKI Kernel with SUSFS
@@ -307,6 +303,50 @@ jobs:
 
 
       # ============================================================
+      # RESOLVE ANDROID VERSION FOR SELECTED KERNEL VERSION
+      # ============================================================
+      #
+      # GKI kernel/susfs branches are published as (android_version,
+      # kernel_version) PAIRS - they are not independent. Android 14
+      # pairs with kernel 6.1, Android 13 with 5.15, Android 12 with
+      # 5.10. The previous version of this workflow hardcoded
+      # ANDROID_VERSION=14 regardless of which kernel_version was
+      # picked, which would have produced an invalid branch name like
+      # "common-android14-5.10" (doesn't exist) the moment anyone
+      # selected 5.10 or 5.15.
+      # ============================================================
+
+      - name: Resolve Android Version
+        env:
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+        run: |
+          set -e
+
+          case "$KERNEL_VER" in
+            "5.10")
+              RESOLVED_ANDROID_VERSION="12"
+              ;;
+            "5.15")
+              RESOLVED_ANDROID_VERSION="13"
+              ;;
+            "6.1")
+              RESOLVED_ANDROID_VERSION="14"
+              ;;
+            *)
+              echo "::error::No known Android version pairing for kernel $KERNEL_VER"
+              exit 1
+              ;;
+          esac
+
+          echo "=========================================="
+          echo "Kernel $KERNEL_VER pairs with Android $RESOLVED_ANDROID_VERSION"
+          echo "=========================================="
+          echo "GKI branch will be: common-android$RESOLVED_ANDROID_VERSION-$KERNEL_VER"
+
+          echo "ANDROID_VERSION=$RESOLVED_ANDROID_VERSION" >> "$GITHUB_ENV"
+
+
+      # ============================================================
       # INITIALIZE KERNEL REPOSITORY
       # ============================================================
 
@@ -447,74 +487,286 @@ jobs:
 
       - name: Download SUSFS
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
+        env:
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
         run: |
           set -e
-          
+
           cd "$KERNEL_DIR"
-          
+
           echo "=========================================="
           echo "Downloading SUSFS"
           echo "=========================================="
-          
+
           rm -rf susfs4ksu
-          
+
+          SUSFS_REMOTE="https://gitlab.com/pershoot/susfs4ksu.git"
+
+          # ------------------------------------------------------------
+          # NOTE: susfs4ksu publishes one branch PER (android, kernel)
+          # version pair, e.g. "gki-android14-6.1-dev". Cloning without
+          # specifying a branch (as this step used to do) grabs whatever
+          # GitLab's default branch happens to be - which is NOT a GKI
+          # branch, and does not contain the right patch file. We query
+          # the actual remote branch list first (no clone needed for
+          # this) and match against the naming patterns SUSFS actually
+          # uses, instead of guessing.
+          # ------------------------------------------------------------
+
           echo ""
-          echo "Cloning SUSFS repository..."
-          
-          # Clone without specifying branch to get default
+          echo "Querying available branches on $SUSFS_REMOTE ..."
+
+          REMOTE_BRANCHES="$(
+            git ls-remote --heads "$SUSFS_REMOTE" \
+              | sed 's@.*refs/heads/@@' \
+              | sort
+          )"
+
+          echo "$REMOTE_BRANCHES"
+
+          SUSFS_BRANCH=""
+
+          for CANDIDATE in \
+            "gki-android$ANDROID_VERSION-$KERNEL_VER-dev" \
+            "gki-android$ANDROID_VERSION-$KERNEL_VER"; do
+
+            if echo "$REMOTE_BRANCHES" | grep -qx "$CANDIDATE"; then
+              SUSFS_BRANCH="$CANDIDATE"
+              break
+            fi
+
+          done
+
+          if [ -z "$SUSFS_BRANCH" ]; then
+
+            echo ""
+            echo "::error::No susfs4ksu branch found matching android$ANDROID_VERSION-$KERNEL_VER"
+            echo "::error::Tried: gki-android$ANDROID_VERSION-$KERNEL_VER-dev, gki-android$ANDROID_VERSION-$KERNEL_VER"
+            echo "::error::susfs4ksu may not support this Android/kernel combination."
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "Using branch: $SUSFS_BRANCH"
+
           git clone \
             --depth=1 \
             --no-tags \
-            https://gitlab.com/pershoot/susfs4ksu.git \
+            --single-branch \
+            -b "$SUSFS_BRANCH" \
+            "$SUSFS_REMOTE" \
             susfs4ksu
-          
-          cd susfs4ksu
-          
-          # Get list of available branches
+
           echo ""
-          echo "Fetching available branches..."
-          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/.*\///' | sort)
-          
-          echo "Available branches:"
-          echo "$BRANCHES"
-          
-          # Try to checkout best available branch
-          BRANCH_FOUND=false
-          for BRANCH in "next-susfs" "master" "main" "develop"; do
-            if echo "$BRANCHES" | grep -q "^$BRANCH$"; then
-              echo ""
-              echo "Checking out branch: $BRANCH"
-              git checkout "$BRANCH" 2>/dev/null
-              BRANCH_FOUND=true
-              break
-            fi
-          done
-          
-          if [ "$BRANCH_FOUND" = false ]; then
-            echo "::warning::Could not find preferred branches, using default"
-          fi
-          
-          cd "$KERNEL_DIR"
-          
-          echo ""
-          echo "SUSFS version:"
+          echo "SUSFS commit:"
           git -C susfs4ksu log -1 --oneline
-          
+
           echo ""
           echo "=========================================="
           echo "SUSFS Contents"
           echo "=========================================="
-          
+
           echo ""
           echo "Kernel patches:"
           find susfs4ksu/kernel_patches -maxdepth 1 -name "*.patch" -type f | sort || echo "No patches found"
-          
+
           echo ""
           echo "Source directories:"
           find susfs4ksu/kernel_patches -maxdepth 1 -type d | sort || echo "No directories found"
-          
+
+          echo ""
+          echo "=========================================="
+          echo "Locating the GKI patch file for this branch"
+          echo "=========================================="
+
+          EXPECTED_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android$ANDROID_VERSION-$KERNEL_VER.patch"
+
+          if [ -f "$EXPECTED_PATCH" ]; then
+            echo "Found expected patch: $EXPECTED_PATCH"
+          else
+            echo "::warning::Expected patch not found at: $EXPECTED_PATCH"
+            echo "Falling back to a name-matched search..."
+
+            MATCHED_PATCH="$(
+              find susfs4ksu/kernel_patches \
+                -maxdepth 1 \
+                -type f \
+                -iname "*android$ANDROID_VERSION-$KERNEL_VER*.patch" \
+                | head -n1
+            )"
+
+            if [ -z "$MATCHED_PATCH" ]; then
+              echo "::error::No GKI patch file found for android$ANDROID_VERSION-$KERNEL_VER on branch $SUSFS_BRANCH."
+              echo "::error::Available patches were listed above - none matched this kernel version."
+              exit 1
+            fi
+
+            echo "Found by name match: $MATCHED_PATCH"
+          fi
+
           echo ""
           echo "✓ SUSFS downloaded successfully"
+
+
+      # ============================================================
+      # FIND KERNEL COMMIT COMPATIBLE WITH SUSFS PATCH
+      # ============================================================
+      #
+      # repo sync fetches the LATEST HEAD of the common-android branch,
+      # which moves forward as Google lands new commits. The SUSFS GKI
+      # patch is generated against a specific older snapshot, so once
+      # HEAD has moved on, hunks stop matching and the patch fails to
+      # apply cleanly. This step deepens history and walks backwards
+      # (mainline commits only, skipping the thousands pulled in by
+      # each merge from upstream Linux) until it finds a commit the
+      # patch actually applies to, then checks the kernel out there.
+      # ============================================================
+
+      - name: Find Compatible Kernel Commit for SUSFS Patch
+        if: ${{ github.event.inputs.susfs_status == 'enable' }}
+        env:
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+        run: |
+          set -e
+
+          COMMON="$KERNEL_DIR/common"
+          SUSFS_GKI_PATCH="$KERNEL_DIR/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android$ANDROID_VERSION-$KERNEL_VER.patch"
+
+          if [ ! -f "$SUSFS_GKI_PATCH" ]; then
+            SUSFS_GKI_PATCH="$(
+              find "$KERNEL_DIR/susfs4ksu/kernel_patches" \
+                -maxdepth 1 \
+                -type f \
+                -iname "*android$ANDROID_VERSION-$KERNEL_VER*.patch" \
+                | head -n1
+            )"
+          fi
+
+          if [ -z "$SUSFS_GKI_PATCH" ] || [ ! -f "$SUSFS_GKI_PATCH" ]; then
+            echo "::error::Could not locate the GKI SUSFS patch file to test against."
+            exit 1
+          fi
+
+          MAX_COMMITS_TO_TRY=600
+          FETCH_DEPTH=$((MAX_COMMITS_TO_TRY + 200))
+
+          cd "$COMMON"
+
+          echo "=========================================="
+          echo "Kernel commit from repo sync (HEAD)"
+          echo "=========================================="
+
+          git log -1 --oneline
+
+          echo ""
+          echo "Patch being tested: $(basename "$SUSFS_GKI_PATCH")"
+
+          echo ""
+          echo "=========================================="
+          echo "Checking if the patch already applies at HEAD"
+          echo "=========================================="
+
+          if patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+
+            echo "HEAD is already compatible. No changes needed."
+
+          else
+
+            echo "HEAD is NOT compatible. Searching history for a commit that is..."
+
+            echo ""
+            echo "=========================================="
+            echo "Deepening shallow checkout of 'common'"
+            echo "=========================================="
+
+            REMOTE="$(git remote | head -n1)"
+
+            if [ -z "$REMOTE" ]; then
+              echo "::error::No git remote found for common kernel checkout."
+              exit 1
+            fi
+
+            echo "Remote: $REMOTE"
+
+            CURRENT_SHA="$(git rev-parse HEAD)"
+
+            if git fetch --deepen="$FETCH_DEPTH" "$REMOTE"; then
+              echo "Deepened using configured remote refspec."
+            elif git fetch --depth="$FETCH_DEPTH" "$REMOTE" "$CURRENT_SHA"; then
+              echo "Deepened by fetching current commit SHA directly."
+            elif git fetch --unshallow "$REMOTE"; then
+              echo "Fully unshallowed (this may take a while)."
+            else
+              echo "::error::Failed to fetch deeper history for the common kernel checkout."
+              exit 1
+            fi
+
+            git checkout --quiet --detach "$CURRENT_SHA"
+
+            echo ""
+            echo "Commits available locally now (first-parent / mainline only):"
+            git log --first-parent --oneline | wc -l
+
+            echo ""
+            echo "=========================================="
+            echo "Searching for a compatible commit"
+            echo "=========================================="
+
+            FOUND_COMMIT=""
+            TRIED=0
+
+            for COMMIT in $(git log --first-parent --format='%H' -n "$MAX_COMMITS_TO_TRY"); do
+
+              TRIED=$((TRIED + 1))
+
+              git checkout --quiet --detach "$COMMIT"
+
+              if patch \
+                --dry-run \
+                --forward \
+                --batch \
+                -p1 \
+                < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+
+                FOUND_COMMIT="$COMMIT"
+                break
+
+              fi
+
+              if [ "$((TRIED % 50))" -eq 0 ]; then
+                echo "...tried $TRIED / $MAX_COMMITS_TO_TRY commits so far, none compatible yet"
+              fi
+
+            done
+
+            if [ -z "$FOUND_COMMIT" ]; then
+              echo "::error::No compatible kernel commit found in the last $MAX_COMMITS_TO_TRY first-parent commits ($TRIED checked)."
+              echo "::error::The SUSFS patch may target a much older kernel snapshot,"
+              echo "::error::or the susfs4ksu branch needs to be updated for this kernel branch."
+              exit 1
+            fi
+
+            echo ""
+            echo "Compatible commit found after checking $TRIED commit(s):"
+            git log -1 --oneline "$FOUND_COMMIT"
+
+            git checkout --quiet --detach "$FOUND_COMMIT"
+
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "Final kernel commit to be used for the build"
+          echo "=========================================="
+
+          git log -1 --oneline
 
 
       # ============================================================
@@ -566,6 +818,103 @@ jobs:
           
           echo ""
           echo "✓ KernelSU-Next with SUSFS installed"
+
+
+      # ============================================================
+      # VERIFY SUSFS <-> KERNELSU-NEXT API COMPATIBILITY
+      # ============================================================
+      #
+      # susfs4ksu and pershoot/KernelSU-Next (next-susfs branch) are
+      # maintained independently and can drift out of sync with each
+      # other upstream. When that happens, susfs.h's function
+      # signatures no longer match how KernelSU-Next's core_hook.c
+      # calls them, and the full kernel build fails ~20-30+ minutes
+      # into compilation with "incompatible pointer types" / "use of
+      # undeclared identifier" errors deep in drivers/kernelsu/.
+      #
+      # This is a best-effort static check, not a real compiler - it
+      # greps for the two failure patterns actually seen in practice
+      # (referenced-but-undefined identifiers, and functions declared
+      # 'void' in susfs.h but assigned to a variable at the call site)
+      # so a real incompatibility fails in seconds instead of after
+      # half an hour of wasted build time.
+      # ============================================================
+
+      - name: Verify SUSFS + KernelSU-Next Compatibility
+        if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
+        run: |
+          set -e
+
+          SUSFS_H="$KERNEL_DIR/susfs4ksu/kernel_patches/include/linux/susfs.h"
+          KSU_SRC_DIR="$KERNEL_DIR/KernelSU-Next/kernel"
+
+          echo "=========================================="
+          echo "Verifying SUSFS <-> KernelSU-Next compatibility"
+          echo "=========================================="
+
+          if [ ! -f "$SUSFS_H" ]; then
+            echo "::error::susfs.h not found at $SUSFS_H"
+            exit 1
+          fi
+
+          if [ ! -d "$KSU_SRC_DIR" ]; then
+            echo "::error::KernelSU-Next kernel source not found at $KSU_SRC_DIR"
+            exit 1
+          fi
+
+          ISSUES_FOUND=0
+
+          echo ""
+          echo "Checking for identifiers referenced by KernelSU-Next but not"
+          echo "defined anywhere in susfs.h..."
+
+          REFERENCED_IDS="$(
+            grep -rhoE '\b(DATA_ADB_[A-Z_]+|CMD_SUSFS_[A-Z_]+)\b' \
+              "$KSU_SRC_DIR" \
+              2>/dev/null \
+            | sort -u
+          )"
+
+          for ID in $REFERENCED_IDS; do
+            if ! grep -q "$ID" "$SUSFS_H" 2>/dev/null; then
+              echo "  MISSING: $ID (used in KernelSU-Next, not found in susfs.h)"
+              ISSUES_FOUND=$((ISSUES_FOUND + 1))
+            fi
+          done
+
+          echo ""
+          echo "Checking for susfs_*() functions whose return type doesn't"
+          echo "match how KernelSU-Next calls them..."
+
+          VOID_FUNCS="$(
+            grep -oE '^void[[:space:]]+susfs_[A-Za-z0-9_]+' "$SUSFS_H" \
+              | awk '{print $2}' \
+              | sort -u
+          )"
+
+          for FN in $VOID_FUNCS; do
+            if grep -rqE "=[[:space:]]*${FN}\(" "$KSU_SRC_DIR" 2>/dev/null; then
+              echo "  MISMATCH: $FN() is declared 'void' in susfs.h, but KernelSU-Next assigns its result to a variable"
+              ISSUES_FOUND=$((ISSUES_FOUND + 1))
+            fi
+          done
+
+          echo ""
+
+          if [ "$ISSUES_FOUND" -gt 0 ]; then
+            echo "::error::Found $ISSUES_FOUND SUSFS <-> KernelSU-Next mismatch(es)."
+            echo "::error::susfs4ksu and pershoot/KernelSU-Next (next-susfs branch) are"
+            echo "::error::out of sync with each other upstream right now - this is not"
+            echo "::error::a bug in this workflow, it's a live compatibility gap between"
+            echo "::error::two independently-updated projects. Options:"
+            echo "::error::  1) Re-run later - both projects are actively maintained"
+            echo "::error::  2) Pin susfs4ksu to an older commit matching this KernelSU-Next tag"
+            echo "::error::  3) Consider a pre-integrated kernel source instead"
+            exit 1
+          fi
+
+          echo "No obvious mismatches found (best-effort check - not a guarantee)."
+          echo "Proceeding to the full build."
 
 
       # ============================================================
@@ -673,67 +1022,107 @@ jobs:
 
       - name: Apply SUSFS to Kernel
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
+        env:
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
         run: |
           set -e
-          
+
           cd "$KERNEL_DIR"
-          
+
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
-          
+
           echo "=========================================="
           echo "Applying SUSFS to Kernel"
           echo "=========================================="
-          
+
           echo ""
           echo "Copying SUSFS source files..."
-          
+
           if [ -d "$SUSFS/kernel_patches/fs" ]; then
             echo "Copying SUSFS filesystem code..."
             cp -rv "$SUSFS/kernel_patches/fs/." "$COMMON/fs/" 2>/dev/null || true
             echo "✓ fs modules copied"
           fi
-          
+
           if [ -d "$SUSFS/kernel_patches/include/linux" ]; then
             echo "Copying SUSFS headers..."
             cp -rv "$SUSFS/kernel_patches/include/linux/." "$COMMON/include/linux/" 2>/dev/null || true
             echo "✓ headers copied"
           fi
-          
+
           echo ""
           echo "=========================================="
-          echo "Looking for SUSFS patch files"
+          echo "Locating the matching SUSFS patch file"
           echo "=========================================="
-          
-          PATCH_FILE=$(find "$SUSFS/kernel_patches" -maxdepth 1 -name "*.patch" -type f | head -n1)
-          
-          if [ -n "$PATCH_FILE" ]; then
-            echo ""
-            echo "Found patch: $(basename $PATCH_FILE)"
-            
-            cd "$COMMON"
-            
-            echo ""
-            echo "Testing patch compatibility..."
-            
-            if patch --dry-run -p1 < "$PATCH_FILE" > /dev/null 2>&1; then
-              echo "Patch is compatible, applying..."
-              patch -p1 < "$PATCH_FILE"
-              echo "✓ SUSFS patch applied successfully"
-            else
-              echo "::warning::Patch may not apply cleanly at current kernel commit"
-              echo "Attempting to apply anyway..."
-              patch -p1 --no-backup-if-mismatch < "$PATCH_FILE" 2>&1 | tail -20 || true
-              echo "::warning::Patch applied with potential conflicts"
-            fi
-          else
-            echo ""
-            echo "::warning::No SUSFS patch files found"
-            echo "SUSFS source files were copied but kernel patches not applied"
+
+          PATCH_FILE="$SUSFS/kernel_patches/50_add_susfs_in_gki-android$ANDROID_VERSION-$KERNEL_VER.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "::warning::Expected patch not found at: $PATCH_FILE"
+            echo "Falling back to a name-matched search..."
+
+            PATCH_FILE="$(
+              find "$SUSFS/kernel_patches" \
+                -maxdepth 1 \
+                -type f \
+                -iname "*android$ANDROID_VERSION-$KERNEL_VER*.patch" \
+                | head -n1
+            )"
           fi
-          
+
+          if [ -z "$PATCH_FILE" ] || [ ! -f "$PATCH_FILE" ]; then
+            echo "::error::No SUSFS patch file found for android$ANDROID_VERSION-$KERNEL_VER."
+            exit 1
+          fi
+
+          echo "Using patch: $(basename "$PATCH_FILE")"
+
+          cd "$COMMON"
+
+          echo ""
+          echo "Testing patch compatibility..."
+
+          if ! patch --dry-run --forward -p1 < "$PATCH_FILE" > /dev/null 2>&1; then
+            echo "::error::SUSFS patch does not apply cleanly at the commit selected by"
+            echo "::error::'Find Compatible Kernel Commit for SUSFS Patch'. This should not"
+            echo "::error::happen - please re-run, and if it persists, report this combo:"
+            echo "::error::  kernel=$KERNEL_VER android=$ANDROID_VERSION"
+            exit 1
+          fi
+
+          echo "Patch is compatible, applying..."
+          patch --forward -p1 < "$PATCH_FILE"
+          echo "✓ SUSFS patch applied successfully"
+
           echo ""
           echo "✓ SUSFS preparation complete"
+
+
+      # ============================================================
+      # BAZEL DISK CACHE (SPEEDS UP REPEAT BUILDS)
+      # ============================================================
+      #
+      # Bazel's disk cache is content-addressed: an entry is only ever
+      # reused if its inputs hash-match exactly, so this cannot produce
+      # a wrong/stale build - a cache hit is always genuinely identical
+      # work, just skipped. This mainly speeds up re-runs with the same
+      # kernel/compiler/lto/root-manager/susfs combination (very common
+      # while iterating on build options), and still gives partial
+      # reuse (toolchain setup, unrelated object files) even when the
+      # kernel commit resolved by the SUSFS compatibility search above
+      # differs between runs.
+      # ============================================================
+
+      - name: Setup Bazel Disk Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: >-
+            bazel-disk-${{ runner.os }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ github.event.inputs.root_manager }}-${{ github.event.inputs.susfs_status }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ github.event.inputs.root_manager }}-${{ github.event.inputs.susfs_status }}-
+            bazel-disk-${{ runner.os }}-${{ github.event.inputs.kernel_version }}-
 
 
       # ============================================================
@@ -790,19 +1179,22 @@ jobs:
           
           echo "✓ Bazel found"
           echo "Bazel version:"
-          tools/bazel --version || echo "Could not get Bazel version"
+          tools/bazel version || echo "Could not get Bazel version"
+          
+          mkdir -p "$HOME/.cache/bazel-disk"
           
           echo ""
           echo "Starting kernel build..."
           echo "Timeout: 240 minutes"
-          echo "(Actual build typically takes 30-60 minutes)"
+          echo "(Actual build typically takes 30-60 minutes, faster on a cache hit)"
           echo ""
           
           # Run build with explicit timeout and error handling
           timeout 240m bash -c '
-          tools/bazel run //build/kernel:kernel_aarch64_dist \
+          tools/bazel run //common:kernel_aarch64_dist \
             --config=fast \
             --config=stamp \
+            --disk_cache="'"$HOME/.cache/bazel-disk"'" \
             --lto="'"$LTO_ARG"'" \
             2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
