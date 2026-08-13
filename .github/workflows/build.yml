@@ -151,14 +151,9 @@ jobs:
             export LTO=$(echo "$LTO_VAL" | tr '[:upper:]' '[:lower:]')
           fi
           
-          echo "Starting GKI build via Bazel wrapper..."
-          # Menggunakan tools/bazel build standar yang disediakan oleh kernel common Android 14
-          if [ -f "tools/bazel" ]; then
-            tools/bazel run //common:kernel_aarch64_out_and_mismatched_modules
-          else
-            # Fallback jika tools/bazel berada di direktori lain
-            BUILD_CONFIG=common/build.config.aarch64 ./build.sh || python3 common/build/build.py
-          fi
+          echo "Starting GKI build via standard build script..."
+          # Memastikan pemanggilan skrip build yang valid untuk kernel common Android 14
+          BUILD_CONFIG=build.config.aarch64 python3 build/build.py
 
       - name: Upload Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
@@ -170,4 +165,3 @@ jobs:
             kernel_source/out/kernel_aarch64/dist/*
             kernel_source/out/*.img
             kernel_source/bazel-out/*
-            kernel_source/common/out/*/dist/*
