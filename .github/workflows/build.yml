@@ -741,131 +741,131 @@ jobs:
       # ============================================================
 
       - name: Build GKI Kernel
-  env:
-    LTO_MODE: ${{ github.event.inputs.lto_mode }}
-    KERNEL_VER: ${{ github.event.inputs.kernel_version }}
-    ANDROID_VER: ${{ env.ANDROID_VERSION }}
-  run: |
-    set +e
-    
-    cd "$KERNEL_DIR"
-    
-    LTO_ARG=$(echo "$LTO_MODE" | tr '[:upper:]' '[:lower:]')
-    
-    echo "=========================================="
-    echo "Pre-Build System Check"
-    echo "=========================================="
-    
-    echo "Disk space:"
-    df -h | grep -E "^/|Filesystem"
-    
-    echo ""
-    echo "Memory available:"
-    free -h
-    
-    echo ""
-    echo "CPU cores:"
-    nproc
-    
-    echo ""
-    echo "=========================================="
-    echo "Finding Bazel Targets"
-    echo "=========================================="
-    
-    echo ""
-    echo "Available targets in //build/kernel:"
-    tools/bazel query "//build/kernel:*" 2>/dev/null | head -20 || echo "Could not query targets"
-    
-    echo ""
-    echo "Building GKI Kernel"
-    echo "=========================================="
-    echo "Android Version: $ANDROID_VER"
-    echo "Kernel Version: $KERNEL_VER"
-    echo "Compiler: ${{ github.event.inputs.compiler }}"
-    echo "LTO Mode: $LTO_ARG"
-    echo "Root Manager: ${{ github.event.inputs.root_manager }}"
-    echo "SUSFS: ${{ github.event.inputs.susfs_status }}"
-    echo "=========================================="
-    
-    echo ""
-    echo "Verifying build tools..."
-    
-    if [ ! -x tools/bazel ]; then
-      echo "::error::tools/bazel not found or not executable"
-      ls -la tools/
-      exit 1
-    fi
-    
-    echo "✓ Bazel found"
-    
-    echo ""
-    echo "Starting kernel build..."
-    echo "Timeout: 240 minutes"
-    echo ""
-    
-    # Try different build targets
-    BUILD_SUCCESS=false
-    
-    # Try 1: kernel_aarch64
-    echo "Attempt 1: Building //build/kernel:kernel_aarch64..."
-    timeout 240m tools/bazel build //build/kernel:kernel_aarch64 \
-      --config=fast \
-      --config=stamp \
-      --lto="$LTO_ARG" \
-      2>&1 | tee build.log
-    
-    if [ $? -eq 0 ]; then
-      BUILD_SUCCESS=true
-      echo "✓ Build attempt 1 succeeded!"
-    else
-      echo "Build attempt 1 failed, trying alternative..."
-      
-      # Try 2: kernel_dist
-      echo ""
-      echo "Attempt 2: Building //build/kernel:kernel_dist..."
-      timeout 240m tools/bazel build //build/kernel:kernel_dist \
-        --config=fast \
-        --config=stamp \
-        --lto="$LTO_ARG" \
-        2>&1 | tee -a build.log
-      
-      if [ $? -eq 0 ]; then
-        BUILD_SUCCESS=true
-        echo "✓ Build attempt 2 succeeded!"
-      else
-        echo "Build attempt 2 failed, trying generic build..."
-        
-        # Try 3: Generic kernel build
-        echo ""
-        echo "Attempt 3: Building //build/kernel/..."
-        timeout 240m tools/bazel build //build/kernel/ \
-          --config=fast \
-          --config=stamp \
-          --lto="$LTO_ARG" \
-          2>&1 | tee -a build.log
-        
-        if [ $? -eq 0 ]; then
-          BUILD_SUCCESS=true
-          echo "✓ Build attempt 3 succeeded!"
-        fi
-      fi
-    fi
-    
-    echo ""
-    echo "=========================================="
-    
-    if [ "$BUILD_SUCCESS" = true ]; then
-      echo "✓ Kernel build completed successfully!"
-      echo "=========================================="
-      exit 0
-    else
-      echo "::error::All build attempts failed"
-      echo "=========================================="
-      echo ""
-      echo "Build log (last 300 lines):"
-      tail -300 build.log
-      exit 1
-    fi
+        env:
+          LTO_MODE: ${{ github.event.inputs.lto_mode }}
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+          ANDROID_VER: ${{ env.ANDROID_VERSION }}
+        run: |
+          set +e
+          
+          cd "$KERNEL_DIR"
+          
+          LTO_ARG=$(echo "$LTO_MODE" | tr '[:upper:]' '[:lower:]')
+          
+          echo "=========================================="
+          echo "Pre-Build System Check"
+          echo "=========================================="
+          
+          echo "Disk space:"
+          df -h | grep -E "^/|Filesystem"
+          
+          echo ""
+          echo "Memory available:"
+          free -h
+          
+          echo ""
+          echo "CPU cores:"
+          nproc
+          
+          echo ""
+          echo "=========================================="
+          echo "Finding Bazel Targets"
+          echo "=========================================="
+          
+          echo ""
+          echo "Available targets in //build/kernel:"
+          tools/bazel query "//build/kernel:*" 2>/dev/null | head -20 || echo "Could not query targets"
+          
+          echo ""
+          echo "Building GKI Kernel"
+          echo "=========================================="
+          echo "Android Version: $ANDROID_VER"
+          echo "Kernel Version: $KERNEL_VER"
+          echo "Compiler: ${{ github.event.inputs.compiler }}"
+          echo "LTO Mode: $LTO_ARG"
+          echo "Root Manager: ${{ github.event.inputs.root_manager }}"
+          echo "SUSFS: ${{ github.event.inputs.susfs_status }}"
+          echo "=========================================="
+          
+          echo ""
+          echo "Verifying build tools..."
+          
+          if [ ! -x tools/bazel ]; then
+            echo "::error::tools/bazel not found or not executable"
+            ls -la tools/
+            exit 1
+          fi
+          
+          echo "✓ Bazel found"
+          
+          echo ""
+          echo "Starting kernel build..."
+          echo "Timeout: 240 minutes"
+          echo ""
+          
+          # Try different build targets
+          BUILD_SUCCESS=false
+          
+          # Try 1: kernel_aarch64
+          echo "Attempt 1: Building //build/kernel:kernel_aarch64..."
+          timeout 240m tools/bazel build //build/kernel:kernel_aarch64 \
+            --config=fast \
+            --config=stamp \
+            --lto="$LTO_ARG" \
+            2>&1 | tee build.log
+          
+          if [ $? -eq 0 ]; then
+            BUILD_SUCCESS=true
+            echo "✓ Build attempt 1 succeeded!"
+          else
+            echo "Build attempt 1 failed, trying alternative..."
+            
+            # Try 2: kernel_dist
+            echo ""
+            echo "Attempt 2: Building //build/kernel:kernel_dist..."
+            timeout 240m tools/bazel build //build/kernel:kernel_dist \
+              --config=fast \
+              --config=stamp \
+              --lto="$LTO_ARG" \
+              2>&1 | tee -a build.log
+            
+            if [ $? -eq 0 ]; then
+              BUILD_SUCCESS=true
+              echo "✓ Build attempt 2 succeeded!"
+            else
+              echo "Build attempt 2 failed, trying generic build..."
+              
+              # Try 3: Generic kernel build
+              echo ""
+              echo "Attempt 3: Building //build/kernel/..."
+              timeout 240m tools/bazel build //build/kernel/ \
+                --config=fast \
+                --config=stamp \
+                --lto="$LTO_ARG" \
+                2>&1 | tee -a build.log
+              
+              if [ $? -eq 0 ]; then
+                BUILD_SUCCESS=true
+                echo "✓ Build attempt 3 succeeded!"
+              fi
+            fi
+          fi
+          
+          echo ""
+          echo "=========================================="
+          
+          if [ "$BUILD_SUCCESS" = true ]; then
+            echo "✓ Kernel build completed successfully!"
+            echo "=========================================="
+            exit 0
+          else
+            echo "::error::All build attempts failed"
+            echo "=========================================="
+            echo ""
+            echo "Build log (last 300 lines):"
+            tail -300 build.log
+            exit 1
+          fi
 
 
       # ============================================================
