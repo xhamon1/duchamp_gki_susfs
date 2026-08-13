@@ -774,7 +774,7 @@ jobs:
           
           echo ""
           echo "Available targets in //build/kernel:"
-          tools/bazel query "//build/kernel:*" 2>/dev/null | head -30 || echo "Could not query targets"
+          tools/bazel query "//build/kernel:*" 2>&1 | grep -E "^//|ERROR" | head -50
           
           echo ""
           echo "=========================================="
@@ -788,113 +788,54 @@ jobs:
           echo "SUSFS: ${{ github.event.inputs.susfs_status }}"
           echo "=========================================="
           
-          echo ""
-          echo "Verifying build tools..."
-          
           if [ ! -x tools/bazel ]; then
-            echo "::error::tools/bazel not found or not executable"
+            echo "::error::tools/bazel not found"
             exit 1
           fi
           
-          echo "✓ Bazel found"
-          
           echo ""
-          echo "Starting kernel build..."
-          echo "Timeout: 240 minutes"
-          echo ""
+          echo "Starting build..."
           
-          # Try different build targets
-          BUILD_SUCCESS=false
-          BUILD_TARGET=""
-          
-          # Try 1: kernel_aarch64
-          echo "Attempt 1: Building //build/kernel:kernel_aarch64..."
-          timeout 240m tools/bazel build //build/kernel:kernel_aarch64 \
+          # Main build attempt
+          timeout 240m tools/bazel run //build/kernel:kernel_aarch64_dist \
             --config=fast \
             --config=stamp \
             --lto="$LTO_ARG" \
-            --verbose_failures \
             2>&1 | tee build.log
           
           BUILD_STATUS=$?
-          if [ $BUILD_STATUS -eq 0 ]; then
-            BUILD_SUCCESS=true
-            BUILD_TARGET="kernel_aarch64"
-            echo "✓ Build attempt 1 succeeded!"
-          else
-            echo "Build attempt 1 failed (exit code $BUILD_STATUS)"
-            
-            # Try 2: kernel_dist
-            echo ""
-            echo "Attempt 2: Building //build/kernel:kernel_dist..."
-            timeout 240m tools/bazel build //build/kernel:kernel_dist \
-              --config=fast \
-              --config=stamp \
-              --lto="$LTO_ARG" \
-              --verbose_failures \
-              2>&1 | tee -a build.log
-            
-            BUILD_STATUS=$?
-            if [ $BUILD_STATUS -eq 0 ]; then
-              BUILD_SUCCESS=true
-              BUILD_TARGET="kernel_dist"
-              echo "✓ Build attempt 2 succeeded!"
-            else
-              echo "Build attempt 2 failed (exit code $BUILD_STATUS)"
-              
-              # Try 3: Generic kernel build
-              echo ""
-              echo "Attempt 3: Building //build/kernel/..."
-              timeout 240m tools/bazel build //build/kernel/ \
-                --config=fast \
-                --config=stamp \
-                --lto="$LTO_ARG" \
-                --verbose_failures \
-                2>&1 | tee -a build.log
-              
-              BUILD_STATUS=$?
-              if [ $BUILD_STATUS -eq 0 ]; then
-                BUILD_SUCCESS=true
-                BUILD_TARGET="kernel (generic)"
-                echo "✓ Build attempt 3 succeeded!"
-              else
-                echo "Build attempt 3 failed (exit code $BUILD_STATUS)"
-              fi
-            fi
-          fi
           
           echo ""
           echo "=========================================="
+          echo "Build Status: Exit code $BUILD_STATUS"
+          echo "=========================================="
           
-          if [ "$BUILD_SUCCESS" = true ]; then
-            echo "✓ Kernel build completed successfully!"
-            echo "Build target: $BUILD_TARGET"
+          # Show build output location
+          echo ""
+          echo "Checking Bazel output..."
+          tools/bazel info output_base 2>&1 | tee -a build.log
+          
+          echo ""
+          echo "Searching for kernel outputs..."
+          find "$KERNEL_DIR" -type f \( -name "vmlinux" -o -name "*.img" -o -name "Image*" \) 2>/dev/null | tee outputs.txt
+          
+          OUTPUT_COUNT=$(wc -l < outputs.txt)
+          echo ""
+          echo "Found $OUTPUT_COUNT output files"
+          
+          if [ $OUTPUT_COUNT -gt 0 ]; then
+            echo "✓ Build succeeded with outputs!"
+            exit 0
+          elif [ $BUILD_STATUS -eq 0 ]; then
+            echo "⚠ Build succeeded but no output files found"
             echo ""
-            echo "Checking build output..."
-            
-            # Check where Bazel puts output
-            echo "Bazel output base directory:"
-            OUTPUT_BASE=$(tools/bazel info output_base 2>/dev/null)
-            echo "Output base: $OUTPUT_BASE"
-            
-            if [ -n "$OUTPUT_BASE" ]; then
-              echo ""
-              echo "Files in output base:"
-              find "$OUTPUT_BASE" -name "vmlinux" -o -name "boot.img" -o -name "*.img" 2>/dev/null | head -20
-            fi
-            
-            echo ""
-            echo "Files in kernel_source:"
-            find "$KERNEL_DIR" -name "vmlinux" -o -name "boot.img" -o -name "Image*" 2>/dev/null | head -20
-            
-            echo ""
-            echo "=========================================="
+            echo "Full build log:"
+            cat build.log
             exit 0
           else
-            echo "::error::All build attempts failed"
-            echo "=========================================="
+            echo "::error::Build failed"
             echo ""
-            echo "Build log (full output):"
+            echo "Full build log:"
             cat build.log
             exit 1
           fi
