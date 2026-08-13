@@ -69,6 +69,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       KERNEL_DIR: ${{ github.workspace }}/kernel_source
       DIST_DIR: ${{ github.workspace }}/kernel_dist
 
@@ -109,7 +110,7 @@ jobs:
       # ============================================================
 
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
 
       # ============================================================
@@ -297,8 +298,7 @@ jobs:
 
           echo
           echo "Repo manifest initialized."
-
-          repo manifest -r > "$GITHUB_WORKSPACE/repo-manifest.xml"
+          echo "The revision snapshot will be generated after repo sync."
 
 
       # ============================================================
@@ -332,7 +332,7 @@ jobs:
 
           REQUIRED_PATHS=(
             "common"
-            "build"
+            "build/kernel"
             "tools"
             "prebuilts"
             "external"
@@ -340,7 +340,13 @@ jobs:
 
           for path in "${REQUIRED_PATHS[@]}"; do
             if [ ! -e "$path" ]; then
-              echo "::error::Required path missing: $path"
+              echo "::error::Required path missing after repo sync: $path"
+              echo
+              echo "Top-level workspace:"
+              ls -la
+              echo
+              echo "Repo projects:"
+              repo list -p || true
               exit 1
             fi
 
@@ -348,14 +354,30 @@ jobs:
           done
 
           echo
-          echo "Kleaf Bazel:"
-          test -x tools/bazel
+          echo "Kleaf/Bazel:"
+          if [ ! -x tools/bazel ]; then
+            echo "::error::tools/bazel is missing or not executable."
+            ls -la tools || true
+            exit 1
+          fi
 
           tools/bazel --version || true
 
           echo
+          echo "Kernel build repository:"
+          git -C build/kernel rev-parse --show-toplevel
+          git -C build/kernel rev-parse HEAD
+
+          echo
           echo "Common kernel:"
           git -C common log -1 --oneline || true
+
+          echo
+          echo "Generating pinned manifest after all repo projects exist..."
+          repo manifest -r > "$GITHUB_WORKSPACE/repo-manifest.xml"
+
+          echo "Manifest saved to:"
+          echo "$GITHUB_WORKSPACE/repo-manifest.xml"
 
 
       # ============================================================
@@ -622,6 +644,67 @@ jobs:
 
 
       # ============================================================
+      # APPLY SUSFS KERNELSU PATCH
+      # ============================================================
+
+      - name: Apply SUSFS KernelSU Patch
+        if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
+        shell: bash
+        run: |
+          set -e
+
+          cd "$KERNEL_DIR"
+
+          COMMON="$KERNEL_DIR/common"
+          SUSFS="$KERNEL_DIR/susfs4ksu"
+          KSU_DIR="$COMMON/KernelSU"
+          KSU_PATCH="$SUSFS/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          echo "=========================================="
+          echo "Applying SUSFS KernelSU patch"
+          echo "=========================================="
+
+          if [ ! -d "$KSU_DIR" ]; then
+            echo "::error::KernelSU directory was not found:"
+            echo "$KSU_DIR"
+            find "$COMMON" -maxdepth 2 -type d -iname '*kernelsu*' -print || true
+            exit 1
+          fi
+
+          if [ ! -f "$KSU_PATCH" ]; then
+            echo "::error::SUSFS KernelSU patch was not found:"
+            echo "$KSU_PATCH"
+            exit 1
+          fi
+
+          cp -f "$KSU_PATCH" "$KSU_DIR/10_enable_susfs_for_ksu.patch"
+
+          cd "$KSU_DIR"
+
+          echo "KernelSU directory:"
+          pwd
+
+          echo
+          echo "Testing patch applicability..."
+
+          if ! patch --dry-run --forward --batch -p1               < 10_enable_susfs_for_ksu.patch; then
+            echo "::error::SUSFS KernelSU patch cannot be applied cleanly."
+            echo
+            echo "KernelSU HEAD:"
+            git log -1 --oneline || true
+            echo
+            echo "Patch:"
+            sed -n '1,220p' 10_enable_susfs_for_ksu.patch
+            exit 1
+          fi
+
+          patch --forward --batch -p1             < 10_enable_susfs_for_ksu.patch
+
+          echo
+          echo "SUSFS KernelSU patch applied successfully."
+
+
+      # ============================================================
       # REMOVE PROTECTED EXPORTS / PATCH FILES
       # ============================================================
 
@@ -662,7 +745,8 @@ jobs:
 
           rm -f \
             "$COMMON/50_add_susfs_in_gki-android14-6.1_GKI.patch" \
-            "$COMMON/60_scope-minimized_manual_hooks.patch"
+            "$COMMON/60_scope-minimized_manual_hooks.patch" \
+            "$COMMON/KernelSU/10_enable_susfs_for_ksu.patch"
 
 
           echo
@@ -1081,7 +1165,7 @@ jobs:
 
       - name: Upload Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: GKI-android14-6.1-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}-SUSFS-${{ github.event.inputs.susfs_status }}-LTO-${{ github.event.inputs.lto_mode }}
           if-no-files-found: error
