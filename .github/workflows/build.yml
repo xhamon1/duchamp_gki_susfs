@@ -535,6 +535,141 @@ jobs:
 
 
       # ============================================================
+      # FIND KERNEL COMMIT COMPATIBLE WITH SUSFS PATCH
+      # ============================================================
+      #
+      # The SUSFS GKI patch is generated against a specific snapshot of
+      # the Android common kernel. "repo sync" above always fetches the
+      # LATEST HEAD of the common-android14-<version> branch, which keeps
+      # moving forward as Google lands new commits. When HEAD has moved
+      # past the commit the SUSFS patch was built for, one or more hunks
+      # no longer match and the patch fails to apply ("cannot be applied
+      # cleanly").
+      #
+      # This step deepens the shallow "common" checkout and walks
+      # backwards through its history, dry-running the SUSFS GKI patch
+      # against each commit, until it finds one the patch actually
+      # applies to cleanly. It then checks the kernel source out at that
+      # commit so the next step succeeds.
+      # ============================================================
+
+      - name: Find Compatible Kernel Commit for SUSFS Patch
+        if: ${{ github.event.inputs.susfs_status == 'enable' }}
+        env:
+          K_VER: ${{ github.event.inputs.kernel_version }}
+        shell: bash
+        run: |
+          set -e
+
+          COMMON="$KERNEL_DIR/common"
+          SUSFS="$KERNEL_DIR/susfs4ksu"
+          SUSFS_GKI_PATCH="$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+          BRANCH="common-android14-$K_VER"
+          MAX_COMMITS_TO_TRY=300
+
+          cd "$COMMON"
+
+          echo "=========================================="
+          echo "Kernel commit from repo sync (HEAD)"
+          echo "=========================================="
+
+          git log -1 --oneline
+
+          echo
+          echo "=========================================="
+          echo "Checking if the patch already applies at HEAD"
+          echo "=========================================="
+
+          if patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+
+            echo "HEAD is already compatible. No changes needed."
+
+          else
+
+            echo "HEAD is NOT compatible. Searching history for a commit that is..."
+
+            echo
+            echo "=========================================="
+            echo "Deepening shallow checkout of '$BRANCH'"
+            echo "=========================================="
+
+            REMOTE="$(git remote | head -n1)"
+
+            if [ -z "$REMOTE" ]; then
+              echo "::error::No git remote found for common kernel checkout."
+              exit 1
+            fi
+
+            echo "Remote: $REMOTE"
+
+            if ! git fetch --depth="$MAX_COMMITS_TO_TRY" "$REMOTE" "$BRANCH"; then
+              echo "::error::Failed to fetch deeper history for '$BRANCH'."
+              exit 1
+            fi
+
+            git checkout --quiet --detach FETCH_HEAD
+
+            echo
+            echo "Commits available locally now:"
+            git log --oneline | wc -l
+
+            echo
+            echo "=========================================="
+            echo "Searching for a compatible commit"
+            echo "=========================================="
+
+            FOUND_COMMIT=""
+
+            for COMMIT in $(git log --format='%H' -n "$MAX_COMMITS_TO_TRY"); do
+
+              git checkout --quiet --detach "$COMMIT"
+
+              if patch \
+                --dry-run \
+                --forward \
+                --batch \
+                -p1 \
+                < "$SUSFS_GKI_PATCH" > /dev/null 2>&1; then
+
+                FOUND_COMMIT="$COMMIT"
+                break
+
+              fi
+
+            done
+
+            if [ -z "$FOUND_COMMIT" ]; then
+
+              echo "::error::No compatible kernel commit found in the last $MAX_COMMITS_TO_TRY commits."
+              echo "::error::The SUSFS patch may target a much older kernel snapshot,"
+              echo "::error::or the susfs4ksu branch needs to be updated for this kernel branch."
+
+              exit 1
+
+            fi
+
+            echo
+            echo "Compatible commit found:"
+            git log -1 --oneline "$FOUND_COMMIT"
+
+            git checkout --quiet --detach "$FOUND_COMMIT"
+
+          fi
+
+          echo
+          echo "=========================================="
+          echo "Final kernel commit to be used for the build"
+          echo "=========================================="
+
+          git log -1 --oneline
+
+
+      # ============================================================
       # APPLY SUSFS SOURCE + GKI PATCH
       # ============================================================
 
