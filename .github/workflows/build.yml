@@ -24,7 +24,7 @@ on:
           - '6.1'
 
       root_manager:
-        description: 'Select Root Manager / Mode'
+        description: 'Select Root Manager'
         required: true
         default: 'KernelSU-Next'
         type: choice
@@ -71,8 +71,9 @@ jobs:
     steps:
 
       # =========================================================
-      # MAXIMIZE BUILD SPACE
+      # CLEAN RUNNER
       # =========================================================
+
       - name: Maximize Build Space
         run: |
           set -e
@@ -90,15 +91,17 @@ jobs:
 
 
       # =========================================================
-      # CHECKOUT WORKFLOW REPOSITORY
+      # CHECKOUT USER REPOSITORY
       # =========================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
 
       # =========================================================
-      # INSTALL DEPENDENCIES
+      # DEPENDENCIES
       # =========================================================
+
       - name: Install Dependencies
         run: |
           set -e
@@ -126,147 +129,231 @@ jobs:
             zip
 
           echo
-          echo "Installed dependency versions:"
+          echo "Installed versions:"
           git --version
           python3 --version
           curl --version | head -n 1
 
 
       # =========================================================
-      # COMPILER SELECTION
+      # COMPILER
       #
-      # IMPORTANT:
-      # Android 14+ Kleaf uses Bazel toolchain resolution.
-      # The external clang directories used by the old workflow
-      # are NOT automatically selected by Kleaf.
+      # Android Common Kernel manifest already provides the
+      # correct hermetic AOSP Clang toolchain.
       #
-      # Therefore AOSP is the supported compiler for this build.
-      # Other selections are rejected instead of silently using
-      # the wrong compiler.
+      # Custom compiler support is intentionally disabled for
+      # this first stable build.
       # =========================================================
+
       - name: Validate Compiler Selection
         env:
-          SELECTED_COMPILER: ${{ github.event.inputs.compiler }}
+          COMPILER: ${{ github.event.inputs.compiler }}
         run: |
           set -e
 
-          echo "Selected compiler: $SELECTED_COMPILER"
+          echo "Selected compiler: $COMPILER"
 
-          if [ "$SELECTED_COMPILER" != "AOSP" ]; then
-            echo "::error::Custom clang '$SELECTED_COMPILER' is not yet supported by this Kleaf workflow."
-            echo "::error::Please select AOSP for the first successful build."
-            echo "::error::Kleaf uses Bazel toolchain resolution instead of the old PATH-based clang method."
+          if [ "$COMPILER" != "AOSP" ]; then
+            echo "::error::Custom compiler '$COMPILER' is not yet supported by this Kleaf workspace."
+            echo "::error::Please select AOSP."
             exit 1
           fi
 
-          echo "Using Android Common Kernel / Kleaf hermetic AOSP toolchain."
+          echo "Using AOSP/Kleaf hermetic toolchain."
 
 
       # =========================================================
-      # CLONE ANDROID COMMON KERNEL
-      #
-      # Uses:
-      #   - HTTP/1.1
-      #   - retry
-      #   - single branch
-      #   - shallow clone
-      #   - blob filtering
-      #
-      # This is more tolerant of GitHub Actions network failures.
+      # INSTALL REPO TOOL
       # =========================================================
-      - name: Clone GKI Source
-        env:
-          K_VER: ${{ github.event.inputs.kernel_version }}
+
+      - name: Install Repo Tool
         run: |
           set -e
 
-          BRANCH="android14-${K_VER}"
+          mkdir -p "$HOME/bin"
+
+          curl -L \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+
+          chmod a+x "$HOME/bin/repo"
+
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+          export PATH="$HOME/bin:$PATH"
+
+          repo --version
+
+
+      # =========================================================
+      # INITIALIZE OFFICIAL ANDROID COMMON KERNEL MANIFEST
+      #
+      # The official manifest for Android 14 / 6.1 provides:
+      #
+      # common
+      # build/kernel
+      # prebuilts/clang
+      # prebuilts/bazel
+      # prebuilts/build-tools
+      # etc.
+      #
+      # This is the important correction compared with the
+      # previous workflow.
+      # =========================================================
+
+      - name: Initialize GKI Manifest
+        env:
+          KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+        run: |
+          set -e
+
+          BRANCH="common-android14-${KERNEL_VERSION}"
 
           echo "=========================================="
-          echo "Android Common Kernel"
+          echo "Android Kernel Manifest"
           echo "Branch: $BRANCH"
           echo "=========================================="
 
           rm -rf kernel_source
 
-          echo
-          echo "Cloning kernel source..."
-
-          for attempt in 1 2 3; do
-            echo
-            echo "Clone attempt: $attempt / 3"
-
-            rm -rf kernel_source
-
-            if git \
-              -c http.version=HTTP/1.1 \
-              clone \
-              --depth=1 \
-              --single-branch \
-              --filter=blob:none \
-              --branch "$BRANCH" \
-              https://android.googlesource.com/kernel/common \
-              kernel_source; then
-              break
-            fi
-
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::Failed to clone Android Common Kernel after 3 attempts."
-              exit 1
-            fi
-
-            echo "Clone failed. Retrying in 10 seconds..."
-            sleep 10
-          done
+          mkdir -p kernel_source
 
           cd kernel_source
 
-          echo
-          echo "=========================================="
-          echo "Kernel source information"
-          echo "=========================================="
-
-          git branch --show-current
-          git log -1 --oneline
-
-          echo
-          echo "Checking required Kleaf files..."
-
-          test -f BUILD.bazel
-          test -f build.config.aarch64
-          test -x tools/bazel
+          repo init \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b "$BRANCH" \
+            --depth=1 \
+            --no-clone-bundle \
+            --no-tags
 
           echo
-          echo "Kleaf files detected successfully."
-
-          echo
-          echo "Bazel version:"
-          tools/bazel --version
+          echo "Manifest initialized."
 
 
       # =========================================================
-      # APPLY ROOT MANAGER
+      # SYNC OFFICIAL KERNEL WORKSPACE
       # =========================================================
-      - name: Apply Root Manager
-        if: ${{ github.event.inputs.root_manager != 'Vanilla' }}
-        env:
-          ROOT_MGR: ${{ github.event.inputs.root_manager }}
+
+      - name: Sync GKI Source
         run: |
           set -e
 
           cd kernel_source
 
           echo "=========================================="
-          echo "Root Manager: $ROOT_MGR"
+          echo "Syncing Android Common Kernel workspace"
           echo "=========================================="
 
-          case "$ROOT_MGR" in
+          for attempt in 1 2 3; do
+
+            echo
+            echo "Repo sync attempt $attempt / 3"
+
+            if repo sync \
+              -c \
+              -j4 \
+              --no-clone-bundle \
+              --no-tags \
+              --optimized-fetch \
+              --prune \
+              --force-sync; then
+
+              echo
+              echo "Repo sync completed successfully."
+              break
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::repo sync failed after 3 attempts."
+              exit 1
+            fi
+
+            echo "Sync failed. Retrying in 15 seconds..."
+            sleep 15
+
+          done
+
+
+      # =========================================================
+      # VERIFY OFFICIAL WORKSPACE
+      # =========================================================
+
+      - name: Verify GKI Workspace
+        run: |
+          set -e
+
+          cd kernel_source
+
+          echo "=========================================="
+          echo "Checking GKI workspace"
+          echo "=========================================="
+
+          echo
+          echo "Workspace:"
+          pwd
+
+          echo
+          echo "Required paths:"
+
+          test -d common
+          test -d build/kernel
+          test -f common/BUILD.bazel
+          test -f build/kernel/kleaf/bazel.sh
+          test -f build/kernel/kleaf/bazel.WORKSPACE
+          test -e tools/bazel
+          test -e WORKSPACE
+
+          echo
+          echo "All required Kleaf files found."
+
+          echo
+          echo "tools/bazel:"
+          ls -l tools/bazel
+
+          echo
+          echo "WORKSPACE:"
+          ls -l WORKSPACE
+
+          echo
+          echo "Kernel commit:"
+          cd common
+          git log -1 --oneline
+
+          echo
+          echo "Kleaf commit:"
+          cd ../build/kernel
+          git log -1 --oneline
+
+
+      # =========================================================
+      # ROOT MANAGER
+      #
+      # IMPORTANT:
+      # Kernel source is kernel_source/common.
+      # =========================================================
+
+      - name: Apply Root Manager
+        if: ${{ github.event.inputs.root_manager != 'Vanilla' }}
+        env:
+          ROOT_MANAGER: ${{ github.event.inputs.root_manager }}
+        run: |
+          set -e
+
+          cd kernel_source/common
+
+          echo "=========================================="
+          echo "Applying Root Manager"
+          echo "Manager: $ROOT_MANAGER"
+          echo "=========================================="
+
+          case "$ROOT_MANAGER" in
 
             "KernelSU-Next")
               echo "Installing KernelSU-Next..."
 
               curl -LSs \
-                "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
+                https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh \
                 | bash -s main
               ;;
 
@@ -274,7 +361,7 @@ jobs:
               echo "Installing SukiSU-Ultra..."
 
               curl -LSs \
-                "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+                https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
                 | bash -s main
               ;;
 
@@ -282,12 +369,12 @@ jobs:
               echo "Installing ReSukiSU..."
 
               curl -LSs \
-                "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
+                https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh \
                 | bash -s main
               ;;
 
             *)
-              echo "::error::Unknown root manager: $ROOT_MGR"
+              echo "::error::Unknown root manager."
               exit 1
               ;;
           esac
@@ -295,25 +382,17 @@ jobs:
           echo
           echo "Root manager installation completed."
 
-          echo
-          echo "KernelSU files:"
-          test -d KernelSU || true
-          test -d KernelSU-Next || true
-
 
       # =========================================================
-      # APPLY SUSFS
-      #
-      # SUSFS has a dedicated gki-android14-6.1 branch.
-      # The upstream project specifically documents this branch
-      # for GKI Android 14 6.1.
+      # SUSFS
       # =========================================================
+
       - name: Download and Apply SUSFS Patch
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager != 'Vanilla' }}
         run: |
           set -e
 
-          cd kernel_source
+          cd kernel_source/common
 
           echo "=========================================="
           echo "Downloading SUSFS"
@@ -335,23 +414,23 @@ jobs:
           cd ..
 
           echo
-          echo "Copying SUSFS kernel files..."
+          echo "Copying SUSFS files..."
 
-          if [ -d "susfs4ksu/kernel_patches/fs" ]; then
+          if [ -d susfs4ksu/kernel_patches/fs ]; then
             cp -rf susfs4ksu/kernel_patches/fs/. fs/
           fi
 
-          if [ -d "susfs4ksu/kernel_patches/include" ]; then
+          if [ -d susfs4ksu/kernel_patches/include ]; then
             cp -rf susfs4ksu/kernel_patches/include/. include/
           fi
 
           echo
-          echo "Applying SUSFS kernel patch..."
+          echo "Applying SUSFS patch..."
 
           PATCH_FILE="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
 
           if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::SUSFS patch file not found:"
+            echo "::error::SUSFS patch was not found."
             echo "$PATCH_FILE"
             exit 1
           fi
@@ -366,49 +445,63 @@ jobs:
 
 
       # =========================================================
-      # VERIFY ROOT + SUSFS
+      # VERIFY MODIFICATIONS
       # =========================================================
+
       - name: Verify Kernel Modifications
         env:
-          ROOT_MGR: ${{ github.event.inputs.root_manager }}
+          ROOT_MANAGER: ${{ github.event.inputs.root_manager }}
           SUSFS: ${{ github.event.inputs.susfs_status }}
         run: |
           set -e
 
-          cd kernel_source
+          cd kernel_source/common
 
           echo "=========================================="
-          echo "Verifying modifications"
+          echo "Verifying kernel modifications"
           echo "=========================================="
 
-          if [ "$ROOT_MGR" != "Vanilla" ]; then
+          echo
+          echo "Root manager: $ROOT_MANAGER"
+          echo "SUSFS: $SUSFS"
+
+          if [ "$ROOT_MANAGER" != "Vanilla" ]; then
             echo
-            echo "KernelSU related files:"
-            find kernel -maxdepth 2 -type f 2>/dev/null | head -n 30 || true
+            echo "KernelSU-related files:"
+            find . \
+              -maxdepth 3 \
+              -type f \
+              \( \
+                -iname "*kernelsu*" \
+                -o -iname "*ksu*" \
+              \) \
+              | head -n 50 || true
           fi
 
-          if [ "$SUSFS" = "enable" ] && [ "$ROOT_MGR" != "Vanilla" ]; then
+          if [ "$SUSFS" = "enable" ]; then
             echo
-            echo "Checking SUSFS configuration..."
+            echo "Searching SUSFS configuration..."
 
-            if grep -R "KSU_SUSFS" kernel/Kconfig kernel 2>/dev/null | head -n 10; then
-              echo
-              echo "SUSFS configuration detected."
-            else
-              echo "::warning::KSU_SUSFS configuration was not detected by grep."
-              echo "The build will determine whether the patch is usable."
-            fi
+            grep -R \
+              "KSU_SUSFS" \
+              . \
+              --include='Kconfig*' \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null \
+              | head -n 20 || true
           fi
 
 
       # =========================================================
-      # SHOW BUILD CONFIGURATION
+      # BUILD CONFIGURATION
       # =========================================================
+
       - name: Show Build Configuration
         env:
           COMPILER: ${{ github.event.inputs.compiler }}
           KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
-          ROOT_MGR: ${{ github.event.inputs.root_manager }}
+          ROOT_MANAGER: ${{ github.event.inputs.root_manager }}
           SUSFS: ${{ github.event.inputs.susfs_status }}
           LTO: ${{ github.event.inputs.lto_mode }}
           RUN_MODE: ${{ github.event.inputs.run_mode }}
@@ -419,20 +512,17 @@ jobs:
           echo "=========================================="
           echo "Compiler     : $COMPILER"
           echo "Kernel       : Android 14 - $KERNEL_VERSION"
-          echo "Root Manager : $ROOT_MGR"
+          echo "Root Manager : $ROOT_MANAGER"
           echo "SUSFS        : $SUSFS"
           echo "LTO          : $LTO"
           echo "Run Mode     : $RUN_MODE"
           echo "=========================================="
-          echo
 
 
       # =========================================================
-      # TEST KLEAF TARGET
-      #
-      # Test Only mode does not compile the complete kernel.
-      # It verifies that the target exists and Bazel can resolve it.
+      # TEST KLEAF
       # =========================================================
+
       - name: Test Kleaf Target
         if: ${{ github.event.inputs.run_mode == 'Test Only' }}
         run: |
@@ -451,39 +541,30 @@ jobs:
 
 
       # =========================================================
-      # BUILD GKI KERNEL
+      # BUILD GKI
       #
-      # Official AOSP Android 14+ method:
+      # Android 14 / 6.1 official common kernel target:
       #
-      # tools/bazel run //common:kernel_aarch64_dist
+      # //common:kernel_aarch64_dist
       #
-      # LTO:
-      # NONE -> none
-      # THIN -> thin
-      # FULL -> full
-      #
-      # default is intentionally NOT used for NONE because the
-      # user explicitly requested NONE.
+      # LTO is configured before the target.
       # =========================================================
+
       - name: Build GKI Kernel
         if: ${{ github.event.inputs.run_mode == 'Build' }}
         env:
-          LTO_VAL: ${{ github.event.inputs.lto_mode }}
+          LTO_MODE: ${{ github.event.inputs.lto_mode }}
         run: |
           set -e
 
           cd kernel_source
 
-          DIST_DIR="$GITHUB_WORKSPACE/kernel_source/out/dist"
-
-          rm -rf "$DIST_DIR"
-          mkdir -p "$DIST_DIR"
-
           echo "=========================================="
           echo "Preparing GKI build"
           echo "=========================================="
 
-          case "$LTO_VAL" in
+          case "$LTO_MODE" in
+
             "NONE")
               LTO_ARG="none"
               ;;
@@ -497,44 +578,46 @@ jobs:
               ;;
 
             *)
-              echo "::error::Invalid LTO mode: $LTO_VAL"
+              echo "::error::Invalid LTO mode."
               exit 1
               ;;
+
           esac
 
           echo
-          echo "LTO mode: $LTO_ARG"
-          echo "Dist directory: $DIST_DIR"
+          echo "Selected LTO: $LTO_ARG"
 
           echo
-          echo "Bazel:"
+          echo "Bazel version:"
           tools/bazel --version
 
           echo
+          echo "Kleaf flags:"
+          tools/bazel build \
+            --lto="$LTO_ARG" \
+            //build/kernel/kleaf:print_flags
+
+          echo
           echo "=========================================="
-          echo "Starting Kleaf GKI build"
-          echo "Target: //common:kernel_aarch64_dist"
+          echo "Starting GKI build"
           echo "=========================================="
 
           tools/bazel run \
             --lto="$LTO_ARG" \
             //common:kernel_aarch64_dist \
             -- \
-            --destdir="$DIST_DIR"
+            --destdir="$GITHUB_WORKSPACE/kernel_source/out/dist"
 
           echo
           echo "=========================================="
-          echo "Kleaf build completed"
+          echo "GKI BUILD FINISHED"
           echo "=========================================="
 
-          echo
-          echo "Generated files:"
-          find "$DIST_DIR" -maxdepth 3 -type f -printf '%P\n' | sort
-
 
       # =========================================================
-      # VERIFY BUILD OUTPUT
+      # VERIFY ARTIFACTS
       # =========================================================
+
       - name: Verify Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
         run: |
@@ -543,29 +626,36 @@ jobs:
           DIST_DIR="$GITHUB_WORKSPACE/kernel_source/out/dist"
 
           echo "=========================================="
-          echo "Verifying artifacts"
+          echo "Verifying kernel artifacts"
           echo "=========================================="
 
           if [ ! -d "$DIST_DIR" ]; then
-            echo "::error::Dist directory does not exist."
+            echo "::error::Distribution directory does not exist."
             exit 1
           fi
 
           FILE_COUNT=$(find "$DIST_DIR" -type f | wc -l)
 
-          echo "Number of generated files: $FILE_COUNT"
+          echo
+          echo "Files generated: $FILE_COUNT"
 
           if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "::error::No kernel artifacts were generated."
+            echo "::error::No artifacts were generated."
             exit 1
           fi
 
           echo
-          echo "Artifacts:"
-          find "$DIST_DIR" -type f -printf '%P\n' | sort
+          echo "=========================================="
+          echo "ARTIFACTS"
+          echo "=========================================="
+
+          find "$DIST_DIR" \
+            -type f \
+            -printf '%P\n' \
+            | sort
 
           echo
-          echo "Important kernel files:"
+          echo "Important files:"
 
           find "$DIST_DIR" \
             -type f \
@@ -577,18 +667,20 @@ jobs:
               -o -name "vendor_boot.img" \
               -o -name "*.ko" \
             \) \
-            -print | sort || true
+            -print \
+            | sort || true
 
 
       # =========================================================
-      # CREATE SIMPLE ARTIFACT MANIFEST
+      # BUILD MANIFEST
       # =========================================================
-      - name: Create Artifact Manifest
+
+      - name: Create Build Manifest
         if: ${{ github.event.inputs.run_mode == 'Build' }}
         env:
           COMPILER: ${{ github.event.inputs.compiler }}
           KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
-          ROOT_MGR: ${{ github.event.inputs.root_manager }}
+          ROOT_MANAGER: ${{ github.event.inputs.root_manager }}
           SUSFS: ${{ github.event.inputs.susfs_status }}
           LTO: ${{ github.event.inputs.lto_mode }}
         run: |
@@ -602,24 +694,32 @@ jobs:
             echo
             echo "Kernel: Android 14 - $KERNEL_VERSION"
             echo "Compiler: $COMPILER"
-            echo "Root Manager: $ROOT_MGR"
+            echo "Root Manager: $ROOT_MANAGER"
             echo "SUSFS: $SUSFS"
             echo "LTO: $LTO"
             echo
-            echo "Kernel commit:"
-            cd "$GITHUB_WORKSPACE/kernel_source"
-            git log -1 --oneline || true
+            echo "Common kernel commit:"
+            cd "$GITHUB_WORKSPACE/kernel_source/common"
+            git log -1 --oneline
+            echo
+            echo "Kleaf commit:"
+            cd "$GITHUB_WORKSPACE/kernel_source/build/kernel"
+            git log -1 --oneline
             echo
             echo "Artifacts:"
-            find "$DIST_DIR" -type f -printf '%P\n' | sort
+            find "$DIST_DIR" \
+              -type f \
+              -printf '%P\n' \
+              | sort
           } > "$DIST_DIR/BUILD-MANIFEST.txt"
 
-          echo "Manifest created."
+          echo "Build manifest created."
 
 
       # =========================================================
-      # UPLOAD ARTIFACTS
+      # UPLOAD
       # =========================================================
+
       - name: Upload Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
         uses: actions/upload-artifact@v4
@@ -632,14 +732,15 @@ jobs:
 
 
       # =========================================================
-      # BUILD SUMMARY
+      # SUMMARY
       # =========================================================
+
       - name: Build Summary
         if: always()
         env:
           COMPILER: ${{ github.event.inputs.compiler }}
           KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
-          ROOT_MGR: ${{ github.event.inputs.root_manager }}
+          ROOT_MANAGER: ${{ github.event.inputs.root_manager }}
           SUSFS: ${{ github.event.inputs.susfs_status }}
           LTO: ${{ github.event.inputs.lto_mode }}
           RUN_MODE: ${{ github.event.inputs.run_mode }}
@@ -650,7 +751,7 @@ jobs:
           echo "=========================================="
           echo "Compiler     : $COMPILER"
           echo "Kernel       : Android 14 - $KERNEL_VERSION"
-          echo "Root Manager : $ROOT_MGR"
+          echo "Root Manager : $ROOT_MANAGER"
           echo "SUSFS        : $SUSFS"
           echo "LTO          : $LTO"
           echo "Run Mode     : $RUN_MODE"
