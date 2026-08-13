@@ -578,8 +578,6 @@ jobs:
 
           SUSFS_GKI_PATCH="$KERNEL_DIR/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
 
-          SUSFS_KSU_PATCH="$KERNEL_DIR/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-
           echo
           echo "Checking required SUSFS files..."
 
@@ -600,14 +598,15 @@ jobs:
 
           echo "OK: $SUSFS_GKI_PATCH"
 
-          if [ ! -f "$SUSFS_KSU_PATCH" ]; then
-            echo "::error::Missing SUSFS KernelSU patch:"
-            echo "$SUSFS_KSU_PATCH"
-
-            exit 1
-          fi
-
-          echo "OK: $SUSFS_KSU_PATCH"
+          # NOTE: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch is
+          # intentionally NOT required here. This workflow installs
+          # KernelSU-Next from the pershoot/KernelSU-Next "next-susfs"
+          # branch when SUSFS is enabled, and that branch already has
+          # SUSFS support merged in directly - applying this patch on top
+          # of it would be redundant (and would target the wrong path,
+          # since that branch isn't checked out yet at this point in the
+          # workflow anyway). See the "Apply Root Manager" and
+          # "Verify KernelSU-Next SUSFS Integration" steps below.
 
           echo
           echo "SUSFS source verification completed."
@@ -927,11 +926,11 @@ jobs:
               else
 
                 echo
-                echo "Installing standard KernelSU-Next..."
+                echo "Installing standard KernelSU-Next (latest tagged release)..."
 
                 curl -LSs \
                   "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
-                  | bash -s main
+                  | bash -s
 
               fi
 
@@ -955,7 +954,7 @@ jobs:
 
               curl -LSs \
                 "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
-                | bash -s main
+                | bash
 
               ;;
 
@@ -973,37 +972,61 @@ jobs:
           echo "Root manager installation completed"
           echo "=========================================="
 
+          echo
+          echo "Resulting layout:"
+
+          for CANDIDATE in "KernelSU-Next" "KernelSU"; do
+            if [ -d "$KERNEL_DIR/$CANDIDATE" ]; then
+              echo "Source dir : $KERNEL_DIR/$CANDIDATE"
+            fi
+          done
+
+          if [ -L "$KERNEL_DIR/common/drivers/kernelsu" ] || [ -d "$KERNEL_DIR/common/drivers/kernelsu" ]; then
+            echo "Driver link: $KERNEL_DIR/common/drivers/kernelsu -> $(readlink -f "$KERNEL_DIR/common/drivers/kernelsu")"
+          else
+            echo "::warning::common/drivers/kernelsu was not created. The root manager setup script may have changed its layout."
+          fi
+
 
       # ============================================================
-      # APPLY SUSFS KERNELSU PATCH
+      # VERIFY KERNELSU-NEXT SUSFS INTEGRATION
+      # ============================================================
+      #
+      # When SUSFS is enabled, the "Apply Root Manager" step above
+      # installs KernelSU-Next from the pershoot/KernelSU-Next
+      # "next-susfs" branch, which already has SUSFS support merged in
+      # directly. There is no separate "10_enable_susfs_for_ksu.patch"
+      # to apply on top of it (applying one would be redundant, and it
+      # would also target the wrong directory: this script clones to
+      # $KERNEL_DIR/KernelSU-Next, a sibling of common/, not
+      # common/KernelSU).
+      #
+      # This step just verifies that install actually happened and
+      # actually contains SUSFS hooks, so a silent failure upstream
+      # doesn't quietly produce a kernel without working SUSFS support.
       # ============================================================
 
-      - name: Apply SUSFS KernelSU Patch
+      - name: Verify KernelSU-Next SUSFS Integration
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
         shell: bash
         run: |
           set -e
 
-          cd "$KERNEL_DIR"
-
           COMMON="$KERNEL_DIR/common"
-          SUSFS="$KERNEL_DIR/susfs4ksu"
-          KSU_DIR="$COMMON/KernelSU"
-
-          KSU_PATCH="$SUSFS/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          KSU_DIR="$KERNEL_DIR/KernelSU-Next"
 
           echo "=========================================="
-          echo "Applying SUSFS KernelSU patch"
+          echo "Verifying KernelSU-Next (next-susfs) integration"
           echo "=========================================="
 
           if [ ! -d "$KSU_DIR" ]; then
-            echo "::error::KernelSU directory was not found:"
+            echo "::error::KernelSU-Next directory was not found:"
             echo "$KSU_DIR"
 
             echo
-            echo "Searching for KernelSU:"
-            find "$COMMON" \
-              -maxdepth 3 \
+            echo "Searching workspace for it:"
+            find "$KERNEL_DIR" \
+              -maxdepth 2 \
               -type d \
               -iname "*kernelsu*" \
               -print || true
@@ -1011,60 +1034,47 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f "$KSU_PATCH" ]; then
-            echo "::error::SUSFS KernelSU patch was not found:"
-            echo "$KSU_PATCH"
+          echo "OK: $KSU_DIR"
+
+          echo
+          echo "KernelSU-Next HEAD:"
+          git -C "$KSU_DIR" log -1 --oneline || true
+
+          echo
+          echo "Checking for the drivers/kernelsu symlink..."
+
+          if [ ! -e "$COMMON/drivers/kernelsu" ]; then
+            echo "::error::$COMMON/drivers/kernelsu was not created."
+            echo "::error::The setup.sh script may not have run correctly."
             exit 1
           fi
 
-          cp -f \
-            "$KSU_PATCH" \
-            "$KSU_DIR/10_enable_susfs_for_ksu.patch"
-
-          cd "$KSU_DIR"
+          echo "OK: $COMMON/drivers/kernelsu -> $(readlink -f "$COMMON/drivers/kernelsu")"
 
           echo
-          echo "KernelSU directory:"
-          pwd
+          echo "Checking that SUSFS hooks are present in the KernelSU-Next source..."
 
-          echo
-          echo "KernelSU HEAD:"
-          git log -1 --oneline || true
+          SUSFS_REF_COUNT="$(
+            grep -RIl \
+              --include="*.c" \
+              --include="*.h" \
+              --include="Kconfig" \
+              -i "susfs" \
+              "$KSU_DIR" \
+              2>/dev/null \
+              | wc -l
+          )"
 
-          echo
-          echo "Testing SUSFS KernelSU patch..."
+          echo "Files referencing susfs: $SUSFS_REF_COUNT"
 
-          if ! patch \
-            --dry-run \
-            --forward \
-            --batch \
-            -p1 \
-            < 10_enable_susfs_for_ksu.patch; then
-
-            echo "::error::SUSFS KernelSU patch cannot be applied cleanly."
-
-            echo
-            echo "Patch:"
-            sed -n '1,260p' \
-              10_enable_susfs_for_ksu.patch
-
+          if [ "$SUSFS_REF_COUNT" -eq 0 ]; then
+            echo "::error::No SUSFS references found inside KernelSU-Next."
+            echo "::error::The next-susfs branch may not have checked out correctly."
             exit 1
           fi
 
           echo
-          echo "Dry-run successful."
-
-          echo
-          echo "Applying SUSFS KernelSU patch..."
-
-          patch \
-            --forward \
-            --batch \
-            -p1 \
-            < 10_enable_susfs_for_ksu.patch
-
-          echo
-          echo "SUSFS KernelSU patch applied successfully."
+          echo "KernelSU-Next SUSFS integration looks correct."
 
 
       # ============================================================
@@ -1086,14 +1096,14 @@ jobs:
           echo "=========================================="
 
           echo
-          echo "Checking KernelSU..."
+          echo "Checking KernelSU-Next..."
 
-          if [ ! -d "$COMMON/KernelSU" ]; then
-            echo "::error::KernelSU directory was not found."
+          if [ ! -d "$KERNEL_DIR/KernelSU-Next" ]; then
+            echo "::error::KernelSU-Next directory was not found."
             exit 1
           fi
 
-          echo "KernelSU found."
+          echo "KernelSU-Next found."
 
           echo
           echo "Checking SUSFS source..."
@@ -1140,8 +1150,7 @@ jobs:
           echo "Removing temporary patch files..."
 
           rm -f \
-            "$COMMON/50_add_susfs_in_gki-android14-6.1.patch" \
-            "$COMMON/KernelSU/10_enable_susfs_for_ksu.patch"
+            "$COMMON/50_add_susfs_in_gki-android14-6.1.patch"
 
           echo
           echo "SUSFS finalization completed."
@@ -1171,12 +1180,12 @@ jobs:
           git -C common status --short || true
 
           echo
-          echo "KernelSU:"
+          echo "Root manager:"
 
-          if [ -d common/KernelSU ]; then
-            echo "KernelSU installed."
+          if [ -e common/drivers/kernelsu ]; then
+            echo "Installed. common/drivers/kernelsu -> $(readlink -f common/drivers/kernelsu)"
           else
-            echo "KernelSU not installed."
+            echo "Not installed (expected for Vanilla)."
           fi
 
           echo
@@ -1545,10 +1554,24 @@ jobs:
             fi
 
             echo
-            echo "KernelSU commit:"
+            echo "Root manager commit:"
 
-            if [ -d "$KERNEL_DIR/common/KernelSU/.git" ]; then
-              git -C "$KERNEL_DIR/common/KernelSU" \
+            KSU_SRC=""
+
+            for CANDIDATE in \
+              "$KERNEL_DIR/KernelSU-Next" \
+              "$KERNEL_DIR/KernelSU"; do
+
+              if [ -d "$CANDIDATE/.git" ]; then
+                KSU_SRC="$CANDIDATE"
+                break
+              fi
+
+            done
+
+            if [ -n "$KSU_SRC" ]; then
+              echo "Source: $KSU_SRC"
+              git -C "$KSU_SRC" \
                 log -1 --oneline
             else
               echo "N/A"
