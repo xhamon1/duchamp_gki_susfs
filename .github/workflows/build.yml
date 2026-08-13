@@ -643,7 +643,8 @@ jobs:
           COMMON="$KERNEL_DIR/common"
           SUSFS="$KERNEL_DIR/susfs4ksu"
           SUSFS_GKI_PATCH="$SUSFS/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
-          MAX_COMMITS_TO_TRY=300
+          MAX_COMMITS_TO_TRY=600
+          FETCH_DEPTH=$((MAX_COMMITS_TO_TRY + 200))
 
           cd "$COMMON"
 
@@ -695,11 +696,11 @@ jobs:
             #   2) fetch more history directly by the current commit SHA
             #   3) fully unshallow as a last resort (slow, but always works)
 
-            if git fetch --deepen="$MAX_COMMITS_TO_TRY" "$REMOTE"; then
+            if git fetch --deepen="$FETCH_DEPTH" "$REMOTE"; then
 
               echo "Deepened using configured remote refspec."
 
-            elif git fetch --depth="$MAX_COMMITS_TO_TRY" "$REMOTE" "$CURRENT_SHA"; then
+            elif git fetch --depth="$FETCH_DEPTH" "$REMOTE" "$CURRENT_SHA"; then
 
               echo "Deepened by fetching current commit SHA directly."
 
@@ -719,17 +720,31 @@ jobs:
             git checkout --quiet --detach "$CURRENT_SHA"
 
             echo
-            echo "Commits available locally now:"
+            echo "Commits available locally now (total, all parents):"
             git log --oneline | wc -l
+
+            echo
+            echo "Commits available locally now (first-parent / mainline only):"
+            git log --first-parent --oneline | wc -l
 
             echo
             echo "=========================================="
             echo "Searching for a compatible commit"
             echo "=========================================="
+            echo
+            echo "NOTE: This walks --first-parent history only (the actual"
+            echo "common-android14-6.1 mainline), skipping the thousands of"
+            echo "commits that get pulled in transitively every time this"
+            echo "branch merges from upstream Linux stable. Without this,"
+            echo "a plain commit search barely moves backward in real GKI"
+            echo "history before hitting the search limit."
 
             FOUND_COMMIT=""
+            TRIED=0
 
-            for COMMIT in $(git log --format='%H' -n "$MAX_COMMITS_TO_TRY"); do
+            for COMMIT in $(git log --first-parent --format='%H' -n "$MAX_COMMITS_TO_TRY"); do
+
+              TRIED=$((TRIED + 1))
 
               git checkout --quiet --detach "$COMMIT"
 
@@ -745,11 +760,15 @@ jobs:
 
               fi
 
+              if [ "$((TRIED % 50))" -eq 0 ]; then
+                echo "...tried $TRIED / $MAX_COMMITS_TO_TRY commits so far, none compatible yet"
+              fi
+
             done
 
             if [ -z "$FOUND_COMMIT" ]; then
 
-              echo "::error::No compatible kernel commit found in the last $MAX_COMMITS_TO_TRY commits."
+              echo "::error::No compatible kernel commit found in the last $MAX_COMMITS_TO_TRY first-parent commits ($TRIED checked)."
               echo "::error::The SUSFS patch may target a much older kernel snapshot,"
               echo "::error::or the susfs4ksu branch needs to be updated for this kernel branch."
 
@@ -758,7 +777,7 @@ jobs:
             fi
 
             echo
-            echo "Compatible commit found:"
+            echo "Compatible commit found after checking $TRIED commit(s):"
             git log -1 --oneline "$FOUND_COMMIT"
 
             git checkout --quiet --detach "$FOUND_COMMIT"
