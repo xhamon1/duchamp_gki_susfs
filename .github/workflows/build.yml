@@ -152,8 +152,14 @@ jobs:
           fi
           
           echo "Starting GKI compilation..."
-          # Eksekusi build menggunakan build.sh bawaan kernel common Android 14
-          BUILD_CONFIG=common/build.config.aarch64 python3 common/build/build.py
+          # Menggunakan skrip build.py yang benar di direktori root kernel_source atau build/
+          if [ -f "build/build.py" ]; then
+            python3 build/build.py
+          elif [ -f "build.sh" ]; then
+            ./build.sh
+          else
+            BUILD_CONFIG=build.config.aarch64 python3 build/build.py
+          fi
 
       - name: Upload Kernel Artifacts
         if: ${{ github.event.inputs.run_mode == 'Build' }}
