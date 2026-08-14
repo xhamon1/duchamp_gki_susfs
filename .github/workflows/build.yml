@@ -560,6 +560,78 @@ jobs:
             susfs4ksu
 
           echo ""
+          echo "SUSFS commit (branch HEAD):"
+          git -C susfs4ksu log -1 --oneline
+
+          # ------------------------------------------------------------
+          # NOTE: susfs4ksu and pershoot/KernelSU-Next are maintained
+          # independently and their branch HEADs can drift out of sync
+          # with each other (confirmed - this exact combination failed
+          # a compatibility check on 2026-08-13). WildKernels publishes
+          # tested, matched (susfs4ksu commit <-> KernelSU-Next commit)
+          # pairs for their own kernel builds; we reuse their pins here
+          # for the combinations we have verified data for, instead of
+          # trusting "latest" on both sides to happen to agree.
+          # Source: https://github.com/WildKernels/GKI_KernelSU_SUSFS
+          #         releases (r2/r3, using pershoot/KernelSU-Next "dev"
+          #         branch @ f1b64f440f3cd170e2a86d7816bef26fbdee1caa)
+          #
+          # If this combo has no known pin (e.g. a kernel version added
+          # later), or if the pin ever becomes unreachable, this falls
+          # back to branch HEAD - the "Verify SUSFS + KernelSU-Next
+          # Compatibility" step later still catches any mismatch fast.
+          # ------------------------------------------------------------
+
+          KNOWN_GOOD_SUSFS_COMMIT=""
+
+          case "android$ANDROID_VERSION-$KERNEL_VER" in
+            "android12-5.10")
+              KNOWN_GOOD_SUSFS_COMMIT="86114db0c49f20fa7857b8b559f3ab87cbc2d00d"
+              ;;
+            "android13-5.15")
+              KNOWN_GOOD_SUSFS_COMMIT="e4bd49f708108cc829fe7ca079312ea8fefa89f8"
+              ;;
+            "android14-6.1")
+              KNOWN_GOOD_SUSFS_COMMIT="9bf72ec2c83d40f194b936cabbc64ce342e005bf"
+              ;;
+          esac
+
+          if [ -n "$KNOWN_GOOD_SUSFS_COMMIT" ]; then
+
+            echo ""
+            echo "=========================================="
+            echo "Pinning to known-compatible commit"
+            echo "=========================================="
+            echo "Target: $KNOWN_GOOD_SUSFS_COMMIT"
+
+            cd susfs4ksu
+
+            if git fetch --depth=1 origin "$KNOWN_GOOD_SUSFS_COMMIT" 2>/dev/null \
+              && git checkout --quiet --detach "$KNOWN_GOOD_SUSFS_COMMIT"; then
+
+              echo "Pinned successfully."
+              echo ""
+              echo "SUSFS commit (pinned):"
+              git log -1 --oneline
+
+            else
+
+              echo "::warning::Could not fetch the known-good pin ($KNOWN_GOOD_SUSFS_COMMIT)."
+              echo "::warning::Falling back to branch HEAD - compatibility is not guaranteed."
+
+            fi
+
+            cd "$KERNEL_DIR"
+
+          else
+
+            echo ""
+            echo "::warning::No known-compatible commit pin for android$ANDROID_VERSION-$KERNEL_VER yet."
+            echo "::warning::Using branch HEAD - compatibility is not guaranteed."
+
+          fi
+
+          echo ""
           echo "SUSFS commit:"
           git -C susfs4ksu log -1 --oneline
 
@@ -649,7 +721,7 @@ jobs:
             exit 1
           fi
 
-          MAX_COMMITS_TO_TRY=600
+          MAX_COMMITS_TO_TRY=1000
           FETCH_DEPTH=$((MAX_COMMITS_TO_TRY + 200))
 
           cd "$COMMON"
@@ -773,7 +845,7 @@ jobs:
       # INSTALL KERNELSU-NEXT WITH SUSFS
       # ============================================================
 
-      - name: Install KernelSU-Next (next-susfs Branch)
+      - name: Install KernelSU-Next (dev Branch, pinned)
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
         run: |
           set -e
@@ -783,21 +855,49 @@ jobs:
           echo "=========================================="
           echo "Installing KernelSU-Next with SUSFS Support"
           echo "=========================================="
+
+          # ------------------------------------------------------------
+          # NOTE: the "next-susfs" branch was confirmed stale on
+          # 2026-08-13 - its driver code still calls susfs functions
+          # using an older calling convention than current susfs4ksu
+          # declares in susfs.h. WildKernels (a widely-used GKI+SUSFS
+          # kernel project) instead builds against the "dev" branch,
+          # pinned to a specific commit, paired with the susfs4ksu
+          # commits pinned in the "Download SUSFS" step above. We reuse
+          # that same tested pairing here.
+          # ------------------------------------------------------------
+
+          KNOWN_GOOD_KSU_COMMIT="f1b64f440f3cd170e2a86d7816bef26fbdee1caa"
           
           echo ""
-          echo "Cloning KernelSU-Next from next-susfs branch..."
-          echo "(This branch has SUSFS already integrated)"
+          echo "Cloning KernelSU-Next (dev branch)..."
           
           git clone \
-            --depth=1 \
             --no-tags \
             --single-branch \
-            -b next-susfs \
+            -b dev \
             https://github.com/pershoot/KernelSU-Next.git \
             KernelSU-Next
           
+          cd KernelSU-Next
+          
           echo ""
-          echo "KernelSU-Next version:"
+          echo "=========================================="
+          echo "Pinning to known-compatible commit"
+          echo "=========================================="
+          echo "Target: $KNOWN_GOOD_KSU_COMMIT"
+          
+          if git checkout --quiet --detach "$KNOWN_GOOD_KSU_COMMIT" 2>/dev/null; then
+            echo "Pinned successfully."
+          else
+            echo "::warning::Could not check out the known-good pin ($KNOWN_GOOD_KSU_COMMIT)."
+            echo "::warning::Staying on branch HEAD - compatibility is not guaranteed."
+          fi
+          
+          cd "$KERNEL_DIR"
+          
+          echo ""
+          echo "KernelSU-Next commit:"
           git -C KernelSU-Next log -1 --oneline
           
           echo ""
@@ -824,13 +924,17 @@ jobs:
       # VERIFY SUSFS <-> KERNELSU-NEXT API COMPATIBILITY
       # ============================================================
       #
-      # susfs4ksu and pershoot/KernelSU-Next (next-susfs branch) are
+      # susfs4ksu and pershoot/KernelSU-Next (dev branch) are
       # maintained independently and can drift out of sync with each
-      # other upstream. When that happens, susfs.h's function
-      # signatures no longer match how KernelSU-Next's core_hook.c
-      # calls them, and the full kernel build fails ~20-30+ minutes
-      # into compilation with "incompatible pointer types" / "use of
-      # undeclared identifier" errors deep in drivers/kernelsu/.
+      # other upstream. Both are now pinned to a tested-compatible pair
+      # (see the "Download SUSFS" and "Install KernelSU-Next" steps
+      # above), but this check stays as a safety net: if a pin ever
+      # becomes stale or unreachable and falls back to branch HEAD,
+      # susfs.h's function signatures may no longer match how
+      # KernelSU-Next's core_hook.c calls them, and the full kernel
+      # build would fail ~20-30+ minutes into compilation with
+      # "incompatible pointer types" / "use of undeclared identifier"
+      # errors deep in drivers/kernelsu/.
       #
       # This is a best-effort static check, not a real compiler - it
       # greps for the two failure patterns actually seen in practice
@@ -903,12 +1007,13 @@ jobs:
 
           if [ "$ISSUES_FOUND" -gt 0 ]; then
             echo "::error::Found $ISSUES_FOUND SUSFS <-> KernelSU-Next mismatch(es)."
-            echo "::error::susfs4ksu and pershoot/KernelSU-Next (next-susfs branch) are"
-            echo "::error::out of sync with each other upstream right now - this is not"
-            echo "::error::a bug in this workflow, it's a live compatibility gap between"
-            echo "::error::two independently-updated projects. Options:"
+            echo "::error::susfs4ksu and/or pershoot/KernelSU-Next fell back to branch HEAD"
+            echo "::error::instead of their tested pin (see warnings above), and HEAD-to-HEAD"
+            echo "::error::they are out of sync right now - this is not a bug in this"
+            echo "::error::workflow, it's a live compatibility gap between two"
+            echo "::error::independently-updated projects. Options:"
             echo "::error::  1) Re-run later - both projects are actively maintained"
-            echo "::error::  2) Pin susfs4ksu to an older commit matching this KernelSU-Next tag"
+            echo "::error::  2) Check whether the pinned commits in this workflow are still current"
             echo "::error::  3) Consider a pre-integrated kernel source instead"
             exit 1
           fi
