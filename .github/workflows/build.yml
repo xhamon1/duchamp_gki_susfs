@@ -1345,8 +1345,11 @@ jobs:
           echo "Verifying Build Output"
           echo "=========================================="
           
-          # Check multiple possible output locations
+          # Check the real Kleaf dist output path first (confirmed from
+          # an actual successful build), then a few fallbacks in case
+          # the target or Kleaf version ever changes this convention.
           KERNEL_OUT_PATHS=(
+            "$KERNEL_DIR/out/kernel_aarch64/dist"
             "$KERNEL_DIR/common/out"
             "$KERNEL_DIR/out"
             "$DIST_DIR"
@@ -1380,8 +1383,96 @@ jobs:
 
 
       # ============================================================
-      # GENERATE BUILD SUMMARY
+      # PACKAGE ANYKERNEL3 ZIP
       # ============================================================
+      #
+      # The raw Bazel dist/ output contains a dozen+ files (vmlinux,
+      # System.map, several system_dlkm.* variants, boot.img, boot-*.img,
+      # Image in three compressions, etc.) - most of which a person
+      # flashing the kernel never needs. This step packages just the
+      # compiled kernel image into a single ready-to-flash AnyKernel3
+      # zip, which is what actually gets flashed via TWRP/recovery or
+      # an app like Kernel Flasher.
+      # ============================================================
+
+      - name: Package AnyKernel3 Zip
+        if: success()
+        run: |
+          set -e
+
+          KERNEL_DIST="$KERNEL_DIR/out/kernel_aarch64/dist"
+
+          echo "=========================================="
+          echo "Packaging AnyKernel3 zip"
+          echo "=========================================="
+
+          if [ ! -d "$KERNEL_DIST" ]; then
+            echo "::error::Dist directory not found: $KERNEL_DIST"
+            exit 1
+          fi
+
+          echo ""
+          echo "Selecting kernel image..."
+
+          KERNEL_IMAGE=""
+          for CANDIDATE in Image.lz4 Image.gz Image; do
+            if [ -f "$KERNEL_DIST/$CANDIDATE" ]; then
+              KERNEL_IMAGE="$KERNEL_DIST/$CANDIDATE"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_IMAGE" ]; then
+            echo "::error::No kernel Image (Image.lz4 / Image.gz / Image) found in $KERNEL_DIST"
+            ls -la "$KERNEL_DIST"
+            exit 1
+          fi
+
+          echo "Using: $(basename "$KERNEL_IMAGE") ($(du -h "$KERNEL_IMAGE" | cut -f1))"
+
+          echo ""
+          echo "Fetching AnyKernel3 template (KernelSU-Next fork - GKI-ready)..."
+
+          rm -rf "$KERNEL_DIR/AnyKernel3"
+
+          git clone \
+            --depth=1 \
+            --no-tags \
+            https://github.com/KernelSU-Next/AnyKernel3.git \
+            "$KERNEL_DIR/AnyKernel3"
+
+          cd "$KERNEL_DIR/AnyKernel3"
+
+          rm -rf .git README.md
+          rm -f Image* zImage* *-dtb 2>/dev/null || true
+
+          cp "$KERNEL_IMAGE" "./$(basename "$KERNEL_IMAGE")"
+
+          KERNEL_STRING="GKI ${{ github.event.inputs.kernel_version }} | ${{ github.event.inputs.compiler }} | LTO=${{ github.event.inputs.lto_mode }} | ${{ github.event.inputs.root_manager }} | SUSFS=${{ github.event.inputs.susfs_status }}"
+
+          sed -i "s|kernel\.string=.*|kernel.string=$KERNEL_STRING|" anykernel.sh
+
+          echo ""
+          echo "anykernel.sh header:"
+          grep -m1 "kernel.string" anykernel.sh
+
+          ZIP_NAME="AnyKernel3-GKI${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}.zip"
+
+          echo ""
+          echo "Building zip: $ZIP_NAME"
+
+          zip -r9 "$KERNEL_DIR/$ZIP_NAME" . -x ".git*" -x "README.md"
+
+          cd "$KERNEL_DIR"
+
+          echo ""
+          echo "AK3_ZIP_PATH=$KERNEL_DIR/$ZIP_NAME" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "✓ AnyKernel3 zip ready: $ZIP_NAME ($(du -h "$ZIP_NAME" | cut -f1))"
+
+
+
 
       - name: Generate Build Summary
         if: success()
@@ -1418,8 +1509,17 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
-          path: ${{ env.KERNEL_DIR }}/common/out
+          name: AnyKernel3-GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
+          path: ${{ env.AK3_ZIP_PATH }}
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload Raw Dist Files (advanced/debugging)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
+          path: ${{ env.KERNEL_DIR }}/out/kernel_aarch64/dist
           retention-days: 7
           if-no-files-found: warn
 
@@ -1442,86 +1542,50 @@ jobs:
           echo "Sending build to Telegram"
           echo "=========================================="
           
-          # Validate secrets
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
             echo "::error::Telegram secrets not configured"
             echo "Please setup TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in GitHub Secrets"
             exit 1
           fi
           
-          # Find kernel output files in multiple locations
-          echo ""
-          echo "Searching for kernel files..."
-          
-          KERNEL_FILES=""
-          for OUT_PATH in "$KERNEL_DIR/common/out" "$KERNEL_DIR/out" "$DIST_DIR" "$KERNEL_DIR/common/dist"; do
-            if [ -d "$OUT_PATH" ]; then
-              KERNEL_FILES=$(find "$OUT_PATH" -type f \( -name "*.img" -o -name "vmlinux*" -o -name "Image*" \) 2>/dev/null)
-              if [ -n "$KERNEL_FILES" ]; then
-                break
-              fi
-            fi
-          done
-          
-          if [ -z "$KERNEL_FILES" ]; then
-            echo "::warning::No kernel files found to upload"
+          if [ -z "${AK3_ZIP_PATH:-}" ] || [ ! -f "$AK3_ZIP_PATH" ]; then
+            echo "::warning::No AnyKernel3 zip found to send (AK3_ZIP_PATH='$AK3_ZIP_PATH')"
             exit 0
           fi
           
-          echo "Found files to upload:"
-          echo "$KERNEL_FILES"
+          FILENAME=$(basename "$AK3_ZIP_PATH")
+          FILESIZE=$(du -h "$AK3_ZIP_PATH" | cut -f1)
           
-          # Process each file
-          FILE_COUNT=0
-          while IFS= read -r KERNEL_FILE; do
-            if [ -z "$KERNEL_FILE" ]; then
-              continue
-            fi
-            
-            FILE_COUNT=$((FILE_COUNT + 1))
-            FILENAME=$(basename "$KERNEL_FILE")
-            FILESIZE=$(du -h "$KERNEL_FILE" | cut -f1)
-            
+          echo ""
+          echo "Sending: $FILENAME ($FILESIZE)"
+          
+          CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
+          CAPTION+="*File* : $FILENAME%0A"
+          CAPTION+="*Size* : $FILESIZE%0A%0A"
+          CAPTION+="*Build Configuration*%0A"
+          CAPTION+="├─ *Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
+          CAPTION+="├─ *Android* : ${{ env.ANDROID_VERSION }}%0A"
+          CAPTION+="├─ *Compiler* : ${{ github.event.inputs.compiler }}%0A"
+          CAPTION+="├─ *LTO Mode* : ${{ github.event.inputs.lto_mode }}%0A"
+          CAPTION+="├─ *Root Manager* : ${{ github.event.inputs.root_manager }}%0A"
+          CAPTION+="└─ *SUSFS* : ${{ github.event.inputs.susfs_status }}%0A%0A"
+          CAPTION+="✅ Ready to flash (AnyKernel3)!%0A"
+          CAPTION+="🔗 Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          
+          RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
+               -F message_thread_id="$THREAD_ID" \
+               -F document=@"$AK3_ZIP_PATH" \
+               -F caption="$CAPTION" \
+               -F parse_mode="Markdown" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument")
+          
+          if echo "$RESPONSE" | grep -q '"ok":true'; then
             echo ""
-            echo "Uploading file $FILE_COUNT: $FILENAME ($FILESIZE)"
-            
-            # Create caption
-            CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
-            CAPTION+="*File* : $FILENAME%0A"
-            CAPTION+="*Size* : $FILESIZE%0A%0A"
-            CAPTION+="*Build Configuration*%0A"
-            CAPTION+="├─ *Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
-            CAPTION+="├─ *Android* : ${{ env.ANDROID_VERSION }}%0A"
-            CAPTION+="├─ *Compiler* : ${{ github.event.inputs.compiler }}%0A"
-            CAPTION+="├─ *LTO Mode* : ${{ github.event.inputs.lto_mode }}%0A"
-            CAPTION+="├─ *Root Manager* : ${{ github.event.inputs.root_manager }}%0A"
-            CAPTION+="└─ *SUSFS* : ${{ github.event.inputs.susfs_status }}%0A%0A"
-            CAPTION+="✅ Build Success!%0A"
-            CAPTION+="🔗 Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            
-            # Send to Telegram
-            RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
-                 -F message_thread_id="$THREAD_ID" \
-                 -F document=@"$KERNEL_FILE" \
-                 -F caption="$CAPTION" \
-                 -F parse_mode="Markdown" \
-                 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument")
-            
-            # Check response
-            if echo "$RESPONSE" | grep -q '"ok":true'; then
-              echo "✓ File uploaded to Telegram successfully"
-            else
-              echo "::warning::Failed to upload file to Telegram"
-              echo "Response: $RESPONSE"
-            fi
-            
-          done <<< "$KERNEL_FILES"
-          
-          if [ $FILE_COUNT -eq 0 ]; then
-            echo "::warning::No files were uploaded"
+            echo "=========================================="
+            echo "✓ AnyKernel3 zip sent to Telegram"
+            echo "=========================================="
           else
-            echo ""
-            echo "=========================================="
-            echo "✓ Uploaded $FILE_COUNT file(s) to Telegram"
-            echo "=========================================="
+            echo "::error::Failed to upload file to Telegram"
+            echo "Response: $RESPONSE"
+            exit 1
           fi
