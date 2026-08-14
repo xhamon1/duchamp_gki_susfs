@@ -1450,7 +1450,7 @@ jobs:
 
           KERNEL_STRING="GKI ${{ github.event.inputs.kernel_version }} | ${{ github.event.inputs.compiler }} | LTO=${{ github.event.inputs.lto_mode }} | ${{ github.event.inputs.root_manager }} | SUSFS=${{ github.event.inputs.susfs_status }}"
 
-          sed -i "s|kernel\.string=.*|kernel.string=$KERNEL_STRING|" anykernel.sh
+          sed -i "s#kernel\.string=.*#kernel.string=$KERNEL_STRING#" anykernel.sh
 
           echo ""
           echo "anykernel.sh header:"
