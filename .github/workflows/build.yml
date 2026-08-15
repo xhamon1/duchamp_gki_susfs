@@ -3,6 +3,12 @@ name: Build GKI Kernel with SUSFS
 on:
   workflow_dispatch:
     inputs:
+      kernel_name:
+        description: 'Kernel Name (used in the AK3 zip filename and banner)'
+        required: true
+        default: 'Amon_Kernel'
+        type: string
+
       kernel_version:
         description: 'Select Kernel Version'
         required: true
@@ -1411,11 +1417,38 @@ jobs:
             exit 1
           fi
 
+          # ------------------------------------------------------------
+          # Full kernel version (e.g. "6.1.180"), not just the dropdown's
+          # major.minor ("6.1"). The patch/sublevel number only exists
+          # in the actual checked-out source, read straight from the
+          # kernel Makefile the same way the kernel build itself does.
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "Reading full kernel version from Makefile..."
+
+          cd "$KERNEL_DIR/common"
+
+          KVERSION="$(grep -m1 '^VERSION = ' Makefile | awk '{print $3}')"
+          KPATCHLEVEL="$(grep -m1 '^PATCHLEVEL = ' Makefile | awk '{print $3}')"
+          KSUBLEVEL="$(grep -m1 '^SUBLEVEL = ' Makefile | awk '{print $3}')"
+
+          if [ -z "$KVERSION" ] || [ -z "$KPATCHLEVEL" ] || [ -z "$KSUBLEVEL" ]; then
+            echo "::warning::Could not fully parse kernel version from Makefile, falling back to dropdown value"
+            FULL_KERNEL_VERSION="${{ github.event.inputs.kernel_version }}"
+          else
+            FULL_KERNEL_VERSION="$KVERSION.$KPATCHLEVEL.$KSUBLEVEL"
+          fi
+
+          echo "Full kernel version: $FULL_KERNEL_VERSION"
+
+          cd "$KERNEL_DIR"
+
           echo ""
           echo "Selecting kernel image..."
 
           KERNEL_IMAGE=""
-          for CANDIDATE in Image.lz4 Image.gz Image; do
+          for CANDIDATE in Image Image.lz4 Image.gz; do
             if [ -f "$KERNEL_DIST/$CANDIDATE" ]; then
               KERNEL_IMAGE="$KERNEL_DIST/$CANDIDATE"
               break
@@ -1423,12 +1456,49 @@ jobs:
           done
 
           if [ -z "$KERNEL_IMAGE" ]; then
-            echo "::error::No kernel Image (Image.lz4 / Image.gz / Image) found in $KERNEL_DIST"
+            echo "::error::No kernel Image (Image / Image.lz4 / Image.gz) found in $KERNEL_DIST"
             ls -la "$KERNEL_DIST"
             exit 1
           fi
 
           echo "Using: $(basename "$KERNEL_IMAGE") ($(du -h "$KERNEL_IMAGE" | cut -f1))"
+
+          # ------------------------------------------------------------
+          # Root manager display name (for the filename, banner and
+          # Telegram caption) and its manager-app download link. The
+          # kernel driver is fully active the moment the phone boots
+          # this kernel - what still needs a manual, separate install
+          # is the userspace manager APK, which is true for every
+          # KernelSU-family kernel, not something a kernel zip can
+          # bundle/auto-install safely. Pointing straight at the right
+          # link removes the guesswork.
+          # ------------------------------------------------------------
+
+          ROOT_MANAGER="${{ github.event.inputs.root_manager }}"
+          ROOT_MANAGER_SLUG="$(echo "$ROOT_MANAGER" | tr -d '-')"
+
+          case "$ROOT_MANAGER" in
+            "KernelSU-Next")
+              MANAGER_APP_URL="https://github.com/KernelSU-Next/KernelSU-Next/releases"
+              ;;
+            "SukiSU-Ultra")
+              MANAGER_APP_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"
+              ;;
+            "ReSukiSU")
+              MANAGER_APP_URL="https://resukisu.github.io/"
+              ;;
+            "Vanilla")
+              MANAGER_APP_URL=""
+              ;;
+          esac
+
+          if [ "${{ github.event.inputs.susfs_status }}" = "enable" ]; then
+            SUSFS_SLUG="SUSFS"
+          else
+            SUSFS_SLUG="NoSUSFS"
+          fi
+
+          BUILD_NUMBER="$(printf '%03d' "${{ github.run_number }}")"
 
           echo ""
           echo "Fetching AnyKernel3 template (KernelSU-Next fork - GKI-ready)..."
@@ -1443,33 +1513,78 @@ jobs:
 
           cd "$KERNEL_DIR/AnyKernel3"
 
-          rm -rf .git README.md
+          rm -rf .git
           rm -f Image* zImage* *-dtb 2>/dev/null || true
+          # NOTE: LICENSE is intentionally kept - AnyKernel3's own
+          # instructions require it to remain in the final zip.
 
           cp "$KERNEL_IMAGE" "./$(basename "$KERNEL_IMAGE")"
 
-          KERNEL_STRING="GKI ${{ github.event.inputs.kernel_version }} | ${{ github.event.inputs.compiler }} | LTO=${{ github.event.inputs.lto_mode }} | ${{ github.event.inputs.root_manager }} | SUSFS=${{ github.event.inputs.susfs_status }}"
+          echo ""
+          echo "Writing banner..."
+
+          {
+            echo "============================================="
+            echo " ${{ github.event.inputs.kernel_name }}"
+            echo " GKI $FULL_KERNEL_VERSION (Android ${{ env.ANDROID_VERSION }})"
+            echo "============================================="
+            echo " Compiler   : ${{ github.event.inputs.compiler }}"
+            echo " LTO        : ${{ github.event.inputs.lto_mode }}"
+            echo " Root       : $ROOT_MANAGER"
+            echo " SUSFS      : ${{ github.event.inputs.susfs_status }}"
+            echo " Build      : #$BUILD_NUMBER"
+            echo "============================================="
+            if [ -n "$MANAGER_APP_URL" ]; then
+              echo " Install the matching manager app after boot:"
+              echo " $MANAGER_APP_URL"
+              echo "============================================="
+            fi
+          } > banner
+
+          KERNEL_STRING="${{ github.event.inputs.kernel_name }} | GKI $FULL_KERNEL_VERSION | $ROOT_MANAGER | SUSFS=${{ github.event.inputs.susfs_status }}"
 
           sed -i "s#kernel\.string=.*#kernel.string=$KERNEL_STRING#" anykernel.sh
+
+          echo ""
+          echo "Adding banner display to anykernel.sh..."
+
+          # Print the banner as the very first thing the installer does.
+          # ui_print is already defined by the update-binary wrapper that
+          # sources this script, so it's safe to call here before the
+          # properties block / ak3-core.sh sourcing further down. Using
+          # cat+move here instead of sed's insert command since the
+          # snippet contains characters (quotes, $, ;) that are easy to
+          # get subtly wrong through sed's own escaping rules.
+          {
+            echo 'if [ -f banner ]; then while IFS= read -r bannerline || [ -n "$bannerline" ]; do ui_print "$bannerline"; done < banner; fi'
+            cat anykernel.sh
+          } > anykernel.sh.new
+          mv anykernel.sh.new anykernel.sh
+          chmod +x anykernel.sh
 
           echo ""
           echo "anykernel.sh header:"
           grep -m1 "kernel.string" anykernel.sh
 
-          ZIP_NAME="AnyKernel3-GKI${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.root_manager }}.zip"
+          ZIP_NAME="${{ github.event.inputs.kernel_name }}-AK3-${FULL_KERNEL_VERSION}-${ROOT_MANAGER_SLUG}-${SUSFS_SLUG}-${BUILD_NUMBER}.zip"
 
           echo ""
           echo "Building zip: $ZIP_NAME"
 
-          zip -r9 "$KERNEL_DIR/$ZIP_NAME" . -x ".git*" -x "README.md"
+          zip -r9 "$KERNEL_DIR/$ZIP_NAME" . -x ".git*"
 
           cd "$KERNEL_DIR"
 
           echo ""
           echo "AK3_ZIP_PATH=$KERNEL_DIR/$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "AK3_ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "AK3_ZIP_BASENAME=${ZIP_NAME%.zip}" >> "$GITHUB_ENV"
+          echo "FULL_KERNEL_VERSION=$FULL_KERNEL_VERSION" >> "$GITHUB_ENV"
+          echo "MANAGER_APP_URL=$MANAGER_APP_URL" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
 
           echo ""
-          echo "✓ AnyKernel3 zip ready: $ZIP_NAME ($(du -h "$ZIP_NAME" | cut -f1))"
+          echo "✓ AnyKernel3 zip ready: $ZIP_NAME ($(du -h "$KERNEL_DIR/$ZIP_NAME" | cut -f1))"
 
 
 
@@ -1487,12 +1602,16 @@ jobs:
           echo "Build Date: $(date)"
           echo ""
           echo "Configuration:"
+          echo "  Kernel Name: ${{ github.event.inputs.kernel_name }}"
           echo "  Android Version: ${{ env.ANDROID_VERSION }}"
-          echo "  Kernel Version: ${{ github.event.inputs.kernel_version }}"
+          echo "  Kernel Version: ${{ env.FULL_KERNEL_VERSION }}"
           echo "  Compiler: ${{ github.event.inputs.compiler }}"
           echo "  LTO Mode: ${{ github.event.inputs.lto_mode }}"
           echo "  Root Manager: ${{ github.event.inputs.root_manager }}"
           echo "  SUSFS: ${{ github.event.inputs.susfs_status }}"
+          echo "  Build Number: ${{ env.BUILD_NUMBER }}"
+          echo ""
+          echo "AnyKernel3 zip: ${{ env.AK3_ZIP_NAME }}"
           echo ""
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Workflow: $GITHUB_WORKFLOW"
@@ -1509,7 +1628,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-GKI-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
+          name: ${{ env.AK3_ZIP_BASENAME }}
           path: ${{ env.AK3_ZIP_PATH }}
           retention-days: 30
           if-no-files-found: warn
@@ -1518,7 +1637,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}
+          name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ env.BUILD_NUMBER }}
           path: ${{ env.KERNEL_DIR }}/out/kernel_aarch64/dist
           retention-days: 7
           if-no-files-found: warn
@@ -1553,24 +1672,48 @@ jobs:
             exit 0
           fi
           
-          FILENAME=$(basename "$AK3_ZIP_PATH")
-          FILESIZE=$(du -h "$AK3_ZIP_PATH" | cut -f1)
+          FILENAME="$(basename "$AK3_ZIP_PATH")"
+          FILESIZE="$(du -h "$AK3_ZIP_PATH" | cut -f1)"
+          RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           
           echo ""
           echo "Sending: $FILENAME ($FILESIZE)"
           
-          CAPTION="✨ *GKI Kernel Build Success* ✨%0A%0A"
-          CAPTION+="*File* : $FILENAME%0A"
-          CAPTION+="*Size* : $FILESIZE%0A%0A"
-          CAPTION+="*Build Configuration*%0A"
-          CAPTION+="├─ *Kernel* : Linux ${{ github.event.inputs.kernel_version }}%0A"
-          CAPTION+="├─ *Android* : ${{ env.ANDROID_VERSION }}%0A"
-          CAPTION+="├─ *Compiler* : ${{ github.event.inputs.compiler }}%0A"
-          CAPTION+="├─ *LTO Mode* : ${{ github.event.inputs.lto_mode }}%0A"
-          CAPTION+="├─ *Root Manager* : ${{ github.event.inputs.root_manager }}%0A"
-          CAPTION+="└─ *SUSFS* : ${{ github.event.inputs.susfs_status }}%0A%0A"
-          CAPTION+="✅ Ready to flash (AnyKernel3)!%0A"
-          CAPTION+="🔗 Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # NOTE: this uses real newlines, not "%0A" - curl's -F sends the
+          # caption as raw bytes (it is a multipart form field, not a URL
+          # query string), so a literal "%0A" text sequence shows up
+          # as-is in the message instead of becoming a line break. Each
+          # line is a separate array element (joined by printf below)
+          # rather than one big multi-line string, so every line here
+          # stays properly YAML-indented.
+          
+          CAPTION_LINES=(
+            "✨ ${{ github.event.inputs.kernel_name }} Build Success ✨"
+            ""
+            '```'
+            "Kernel      : Linux $FULL_KERNEL_VERSION"
+            "Android     : ${{ env.ANDROID_VERSION }}"
+            "Compiler    : ${{ github.event.inputs.compiler }}"
+            "LTO         : ${{ github.event.inputs.lto_mode }}"
+            ""
+            "Root Manager: ${{ github.event.inputs.root_manager }}"
+            "SUSFS       : ${{ github.event.inputs.susfs_status }}"
+            ""
+            "File        : $FILENAME"
+            "Size        : $FILESIZE"
+            "Build       : #$BUILD_NUMBER"
+            '```'
+            ""
+            "✅ Ready to flash (AnyKernel3)!"
+          )
+          
+          if [ -n "${MANAGER_APP_URL:-}" ]; then
+            CAPTION_LINES+=("📲 Manager app: $MANAGER_APP_URL")
+          fi
+          
+          CAPTION_LINES+=("🔗 Run: $RUN_URL")
+          
+          CAPTION="$(printf '%s\n' "${CAPTION_LINES[@]}")"
           
           RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
                -F message_thread_id="$THREAD_ID" \
