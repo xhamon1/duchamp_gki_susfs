@@ -1679,18 +1679,39 @@ jobs:
           echo ""
           echo "Sending: $FILENAME ($FILESIZE)"
           
-          # NOTE: this uses real newlines, not "%0A" - curl's -F sends the
-          # caption as raw bytes (it is a multipart form field, not a URL
-          # query string), so a literal "%0A" text sequence shows up
-          # as-is in the message instead of becoming a line break. Each
-          # line is a separate array element (joined by printf below)
-          # rather than one big multi-line string, so every line here
-          # stays properly YAML-indented.
+          # ------------------------------------------------------------
+          # NOTE: this previously used parse_mode=Markdown (legacy), which
+          # actually FAILED against the real Telegram API: it treats a
+          # lone "_" as the start of an italic span, and values like
+          # "Amon_Kernel" contain one. With an odd/mismatched number of
+          # underscores across the message, Telegram couldn't resolve
+          # the entity and rejected the whole request with "can't parse
+          # entities" - confirmed from an actual failed run, not just a
+          # local simulation (bash-level newline handling was already
+          # correct; this was purely a Telegram-side parsing rule).
+          #
+          # HTML mode doesn't have that problem: only "<", ">" and "&"
+          # are special, so kernel names/filenames with underscores,
+          # dots, dashes etc. are always safe. The only thing this still
+          # needs to guard is escaping those three characters in any
+          # value that came from free text (kernel_name).
+          # ------------------------------------------------------------
+          
+          html_escape() {
+            local s="$1"
+            s="${s//&/&amp;}"
+            s="${s//</&lt;}"
+            s="${s//>/&gt;}"
+            printf '%s' "$s"
+          }
+          
+          KERNEL_NAME_ESC="$(html_escape "${{ github.event.inputs.kernel_name }}")"
+          FILENAME_ESC="$(html_escape "$FILENAME")"
           
           CAPTION_LINES=(
-            "✨ ${{ github.event.inputs.kernel_name }} Build Success ✨"
+            "✨ <b>${KERNEL_NAME_ESC} Build Success</b> ✨"
             ""
-            '```'
+            "<pre>"
             "Kernel      : Linux $FULL_KERNEL_VERSION"
             "Android     : ${{ env.ANDROID_VERSION }}"
             "Compiler    : ${{ github.event.inputs.compiler }}"
@@ -1699,10 +1720,10 @@ jobs:
             "Root Manager: ${{ github.event.inputs.root_manager }}"
             "SUSFS       : ${{ github.event.inputs.susfs_status }}"
             ""
-            "File        : $FILENAME"
+            "File        : $FILENAME_ESC"
             "Size        : $FILESIZE"
             "Build       : #$BUILD_NUMBER"
-            '```'
+            "</pre>"
             ""
             "✅ Ready to flash (AnyKernel3)!"
           )
@@ -1719,7 +1740,7 @@ jobs:
                -F message_thread_id="$THREAD_ID" \
                -F document=@"$AK3_ZIP_PATH" \
                -F caption="$CAPTION" \
-               -F parse_mode="Markdown" \
+               -F parse_mode="HTML" \
                "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument")
           
           if echo "$RESPONSE" | grep -q '"ok":true'; then
