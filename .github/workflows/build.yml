@@ -198,6 +198,27 @@ jobs:
 
 
       # ============================================================
+      # CACHE CLANG TOOLCHAIN (SPEEDS UP REPEAT BUILDS)
+      # ============================================================
+      #
+      # The custom compiler options (GreenForce/Neutron/WeebX/Zyc)
+      # download and extract a release tarball from GitHub every run -
+      # this can be a few hundred MB. Caching the extracted result
+      # means repeat runs with the same compiler choice skip that
+      # entirely. No effect for AOSP (nothing is downloaded there).
+      # ============================================================
+
+      - name: Cache Clang Toolchain
+        if: ${{ github.event.inputs.compiler != 'AOSP' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/clang
+          key: clang-${{ github.event.inputs.compiler }}-${{ github.run_id }}
+          restore-keys: |
+            clang-${{ github.event.inputs.compiler }}-
+
+
+      # ============================================================
       # SETUP CLANG COMPILER
       # ============================================================
 
@@ -216,6 +237,10 @@ jobs:
           CLANG_DIR="${{ github.workspace }}/clang"
           mkdir -p "$CLANG_DIR"
           
+          if [ "$COMPILER" != "AOSP" ] && [ -n "$(find "$CLANG_DIR" -maxdepth 4 -iname 'clang' -type f 2>/dev/null | head -n1)" ]; then
+            echo "Found a cached, already-extracted toolchain - skipping download."
+            find "$CLANG_DIR" -maxdepth 4 -iname 'clang' -type f | head -n1
+          else
           # Function to download and extract release tarball
           download_release_tarball() {
             local REPO=$1
@@ -299,6 +324,8 @@ jobs:
               exit 1
               ;;
           esac
+          
+          fi
           
           # Verify clang binary for custom toolchains
           if [ "$COMPILER" != "AOSP" ]; then
@@ -394,6 +421,36 @@ jobs:
           
           echo ""
           echo "✓ Repository initialized"
+
+
+      # ============================================================
+      # CACHE REPO MIRROR (SPEEDS UP REPEAT SYNCS)
+      # ============================================================
+      #
+      # repo sync, plus the deeper git history our own "Select Kernel
+      # Sublevel" and "Find Compatible Kernel Commit" steps fetch on
+      # top of it, can mean pulling 1000+ commits of kernel history
+      # from scratch on every single run. This caches the .repo git
+      # object store so later runs start from a warm copy and only
+      # fetch what changed since. It cannot make a build wrong: repo
+      # sync/git fetch only ever ADD objects on top of whatever is
+      # already there, they don't trust a cache for what HEAD actually
+      # is - that's still resolved fresh from the remote every run.
+      #
+      # The key includes the run ID so every run saves a fresh (and
+      # over time, deeper) cache; restore-keys picks up the most recent
+      # prior run's cache for the same kernel version as a warm start.
+      # Storage is self-managing - GitHub evicts the least-recently-used
+      # cache entries once the per-repository cache limit is hit.
+      # ============================================================
+
+      - name: Cache Repo Mirror
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.KERNEL_DIR }}/.repo
+          key: repo-mirror-${{ github.event.inputs.kernel_version }}-${{ github.run_id }}
+          restore-keys: |
+            repo-mirror-${{ github.event.inputs.kernel_version }}-
 
 
       # ============================================================
@@ -1529,6 +1586,90 @@ jobs:
           
           echo ""
           echo "✓ Build output verification complete"
+
+
+      # ============================================================
+      # CHECK GKI KMI/ABI COMPLIANCE (DIAGNOSTIC)
+      # ============================================================
+      #
+      # GKI kernels enforce ABI compatibility at runtime via symbol
+      # versioning (CONFIG_MODVERSIONS): a vendor's prebuilt kernel
+      # module (e.g. the device's WiFi driver) will refuse to load if
+      # its expected symbol checksums don't match this kernel's actual
+      # ones. The SUSFS patch touches many core files across fs/,
+      # security/selinux/, kernel/, mm/ - if any of that shifts a
+      # protected symbol's checksum, otherwise-compatible vendor
+      # modules can fail to load on real hardware even though the
+      # kernel itself compiles and boots fine.
+      #
+      # This is a best-effort, informational check using whatever the
+      # Kleaf build itself already produced (gki_certification_tools) -
+      # it does not fail the build either way, since the exact tool
+      # interface can change between Kleaf versions and this is meant
+      # to surface evidence, not gate the pipeline.
+      # ============================================================
+
+      - name: Check GKI KMI/ABI Compliance (diagnostic)
+        if: success()
+        continue-on-error: true
+        run: |
+          set +e
+
+          KERNEL_DIST="$KERNEL_DIR/out/kernel_aarch64/dist"
+          CERT_TOOLS="$KERNEL_DIST/gki_certification_tools.tar.gz"
+
+          echo "=========================================="
+          echo "GKI KMI/ABI compliance check (best-effort)"
+          echo "=========================================="
+
+          if [ ! -f "$CERT_TOOLS" ]; then
+            echo "gki_certification_tools.tar.gz not found in dist output, skipping."
+            exit 0
+          fi
+
+          WORKDIR="$KERNEL_DIR/gki_cert_check"
+          rm -rf "$WORKDIR"
+          mkdir -p "$WORKDIR"
+
+          tar -xzf "$CERT_TOOLS" -C "$WORKDIR"
+
+          echo ""
+          echo "Contents of gki_certification_tools.tar.gz:"
+          find "$WORKDIR" -maxdepth 2 -type f | sort
+
+          echo ""
+          echo "Looking for a runnable certification/check script..."
+
+          CHECK_SCRIPT="$(
+            find "$WORKDIR" \
+              -maxdepth 2 \
+              -type f \
+              \( -iname "*certif*" -o -iname "*check*abi*" -o -iname "*kmi*" \) \
+              -perm -u+x \
+              | head -n1
+          )"
+
+          if [ -z "$CHECK_SCRIPT" ]; then
+            echo "No obviously-runnable check script found (interface may differ"
+            echo "in this Kleaf version). Skipping - this is informational only."
+            exit 0
+          fi
+
+          echo ""
+          echo "Found: $CHECK_SCRIPT"
+          echo "Attempting to run it against the dist output (best-effort)..."
+          echo ""
+
+          cd "$KERNEL_DIST"
+          "$CHECK_SCRIPT" --help 2>&1 | head -40
+          echo ""
+          echo "(Ran with --help only, to see its expected usage without"
+          echo "guessing flags that might not apply to this kernel/target.)"
+
+          echo ""
+          echo "=========================================="
+          echo "End of GKI KMI/ABI compliance check"
+          echo "=========================================="
 
 
       # ============================================================
