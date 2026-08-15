@@ -19,6 +19,12 @@ on:
           - '5.15'
           - '6.1'
 
+      kernel_sublevel:
+        description: 'Kernel sublevel/patch number, e.g. "162", "178", "180" - leave as "latest" to auto-pick whatever commit the SUSFS patch is compatible with'
+        required: true
+        default: 'latest'
+        type: string
+
       compiler:
         description: 'Select Compiler (Clang)'
         required: true
@@ -456,6 +462,108 @@ jobs:
 
 
       # ============================================================
+      # SELECT KERNEL SUBLEVEL
+      # ============================================================
+      #
+      # By default the kernel checkout is whatever "repo sync" resolves
+      # to (its latest commit), and if SUSFS is enabled, the "Find
+      # Compatible Kernel Commit" step further moves that to whatever
+      # commit the SUSFS patch happens to apply against. Neither of
+      # those lets a person pick a specific sublevel (e.g. 6.1.180
+      # instead of 6.1.162) on purpose - which matters because
+      # different sublevels can behave differently on real hardware
+      # (this is a legitimate way to test whether a device-specific
+      # issue is tied to one particular kernel commit).
+      # ============================================================
+
+      - name: Select Kernel Sublevel
+        env:
+          KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+          SUBLEVEL: ${{ github.event.inputs.kernel_sublevel }}
+        run: |
+          set -e
+
+          if [ "$SUBLEVEL" = "latest" ] || [ -z "$SUBLEVEL" ]; then
+            echo "Kernel sublevel: latest (no pinning requested)"
+            exit 0
+          fi
+
+          COMMON="$KERNEL_DIR/common"
+          MAX_COMMITS_TO_TRY=1000
+          FETCH_DEPTH=$((MAX_COMMITS_TO_TRY + 200))
+
+          cd "$COMMON"
+
+          echo "=========================================="
+          echo "Looking for kernel $KERNEL_VER.$SUBLEVEL"
+          echo "=========================================="
+
+          CURRENT_SUBLEVEL="$(grep -m1 '^SUBLEVEL = ' Makefile | awk '{print $3}')"
+          echo "HEAD is currently at sublevel: $CURRENT_SUBLEVEL"
+
+          if [ "$CURRENT_SUBLEVEL" = "$SUBLEVEL" ]; then
+            echo "Already at the requested sublevel."
+            exit 0
+          fi
+
+          echo ""
+          echo "Deepening history to search for it..."
+
+          REMOTE="$(git remote | head -n1)"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+
+          if git fetch --deepen="$FETCH_DEPTH" "$REMOTE"; then
+            echo "Deepened using configured remote refspec."
+          elif git fetch --depth="$FETCH_DEPTH" "$REMOTE" "$CURRENT_SHA"; then
+            echo "Deepened by fetching current commit SHA directly."
+          elif git fetch --unshallow "$REMOTE"; then
+            echo "Fully unshallowed (this may take a while)."
+          else
+            echo "::error::Failed to fetch deeper history."
+            exit 1
+          fi
+
+          git checkout --quiet --detach "$CURRENT_SHA"
+
+          echo ""
+          echo "Searching first-parent history..."
+
+          FOUND_COMMIT=""
+          TRIED=0
+
+          for COMMIT in $(git log --first-parent --format='%H' -n "$MAX_COMMITS_TO_TRY"); do
+
+            TRIED=$((TRIED + 1))
+
+            THIS_SUBLEVEL="$(git show "$COMMIT:Makefile" 2>/dev/null | grep -m1 '^SUBLEVEL = ' | awk '{print $3}')"
+
+            if [ "$THIS_SUBLEVEL" = "$SUBLEVEL" ]; then
+              FOUND_COMMIT="$COMMIT"
+              break
+            fi
+
+            if [ "$((TRIED % 100))" -eq 0 ]; then
+              echo "...checked $TRIED / $MAX_COMMITS_TO_TRY commits so far"
+            fi
+
+          done
+
+          if [ -z "$FOUND_COMMIT" ]; then
+            echo "::error::No commit found for kernel $KERNEL_VER.$SUBLEVEL in the last $MAX_COMMITS_TO_TRY first-parent commits."
+            echo "::error::Check the sublevel number is correct, or use 'latest' to skip pinning."
+            exit 1
+          fi
+
+          echo ""
+          echo "Found: $(git log -1 --oneline "$FOUND_COMMIT")"
+
+          git checkout --quiet --detach "$FOUND_COMMIT"
+
+          echo ""
+          echo "✓ Kernel pinned to $KERNEL_VER.$SUBLEVEL"
+
+
+      # ============================================================
       # VALIDATE CONFIGURATION
       # ============================================================
 
@@ -706,6 +814,7 @@ jobs:
         if: ${{ github.event.inputs.susfs_status == 'enable' }}
         env:
           KERNEL_VER: ${{ github.event.inputs.kernel_version }}
+          SUBLEVEL: ${{ github.event.inputs.kernel_sublevel }}
         run: |
           set -e
 
@@ -756,6 +865,13 @@ jobs:
             echo "HEAD is already compatible. No changes needed."
 
           else
+
+            if [ "$SUBLEVEL" != "latest" ] && [ -n "$SUBLEVEL" ]; then
+              echo "::error::Kernel $KERNEL_VER.$SUBLEVEL was explicitly requested, but the SUSFS patch does not apply cleanly to it."
+              echo "::error::Not auto-searching for a different sublevel, since that would silently give you something other than what you asked for."
+              echo "::error::Either try a different sublevel, or set kernel_sublevel back to 'latest' to let this step auto-pick a compatible one."
+              exit 1
+            fi
 
             echo "HEAD is NOT compatible. Searching history for a commit that is..."
 
@@ -1208,6 +1324,43 @@ jobs:
 
           echo ""
           echo "✓ SUSFS preparation complete"
+
+
+      # ============================================================
+      # ============================================================
+      # BRAND KERNEL VERSION STRING
+      # ============================================================
+      #
+      # By default the kernel's version string (what shows up under
+      # Settings > About > Kernel version, and what `uname -r` prints)
+      # only contains the raw upstream info, e.g.
+      # "6.1.162-android14-11-g0e9240ec2cfa-dirty" - nothing that
+      # identifies this as a custom build. The kernel build scripts
+      # (scripts/setlocalversion) automatically pick up and append the
+      # contents of any "localversion*" file placed in the source root,
+      # which is the standard, built-in way every mainline Linux kernel
+      # supports for this - no custom patching needed.
+      # ============================================================
+
+      - name: Brand Kernel Version String
+        run: |
+          set -e
+
+          RAW_NAME="${{ github.event.inputs.kernel_name }}"
+          SAFE_NAME="$(echo "$RAW_NAME" | tr -c '[:alnum:]_-' '_' | sed 's/_\+/_/g; s/^_//; s/_$//')"
+
+          if [ -z "$SAFE_NAME" ]; then
+            SAFE_NAME="Kernel"
+          fi
+
+          if [ "$SAFE_NAME" != "$RAW_NAME" ]; then
+            echo "::warning::kernel_name '$RAW_NAME' contains characters not safe for a kernel version string, using '$SAFE_NAME' instead"
+          fi
+
+          echo "-$SAFE_NAME" > "$KERNEL_DIR/common/localversion-name"
+
+          echo "Wrote $KERNEL_DIR/common/localversion-name:"
+          cat "$KERNEL_DIR/common/localversion-name"
 
 
       # ============================================================
