@@ -674,78 +674,22 @@ jobs:
             susfs4ksu
 
           echo ""
-          echo "SUSFS commit (branch HEAD):"
+          echo "SUSFS commit (branch HEAD, latest):"
           git -C susfs4ksu log -1 --oneline
 
           # ------------------------------------------------------------
-          # NOTE: susfs4ksu and pershoot/KernelSU-Next are maintained
-          # independently and their branch HEADs can drift out of sync
-          # with each other (confirmed - this exact combination failed
-          # a compatibility check on 2026-08-13). WildKernels publishes
-          # tested, matched (susfs4ksu commit <-> KernelSU-Next commit)
-          # pairs for their own kernel builds; we reuse their pins here
-          # for the combinations we have verified data for, instead of
-          # trusting "latest" on both sides to happen to agree.
-          # Source: https://github.com/WildKernels/GKI_KernelSU_SUSFS
-          #         releases (r2/r3, using pershoot/KernelSU-Next "dev"
-          #         branch @ f1b64f440f3cd170e2a86d7816bef26fbdee1caa)
-          #
-          # If this combo has no known pin (e.g. a kernel version added
-          # later), or if the pin ever becomes unreachable, this falls
-          # back to branch HEAD - the "Verify SUSFS + KernelSU-Next
-          # Compatibility" step later still catches any mismatch fast.
+          # NOTE: this previously pinned to a specific, months-old
+          # commit (sourced from WildKernels' tested pairing) to avoid
+          # an API mismatch between susfs4ksu and pershoot/KernelSU-Next.
+          # Switched back to tracking branch HEAD directly: an old pin
+          # can itself become a source of problems (e.g. it may predate
+          # symbol/KMI fixes present in more recent commits), and the
+          # "Verify SUSFS + KernelSU-Next Compatibility" step further
+          # down the pipeline already catches a genuine API mismatch in
+          # seconds rather than after a wasted 30+ minute build, so it
+          # is safe to rely on that instead of a hardcoded pin here.
           # ------------------------------------------------------------
 
-          KNOWN_GOOD_SUSFS_COMMIT=""
-
-          case "android$ANDROID_VERSION-$KERNEL_VER" in
-            "android12-5.10")
-              KNOWN_GOOD_SUSFS_COMMIT="86114db0c49f20fa7857b8b559f3ab87cbc2d00d"
-              ;;
-            "android13-5.15")
-              KNOWN_GOOD_SUSFS_COMMIT="e4bd49f708108cc829fe7ca079312ea8fefa89f8"
-              ;;
-            "android14-6.1")
-              KNOWN_GOOD_SUSFS_COMMIT="9bf72ec2c83d40f194b936cabbc64ce342e005bf"
-              ;;
-          esac
-
-          if [ -n "$KNOWN_GOOD_SUSFS_COMMIT" ]; then
-
-            echo ""
-            echo "=========================================="
-            echo "Pinning to known-compatible commit"
-            echo "=========================================="
-            echo "Target: $KNOWN_GOOD_SUSFS_COMMIT"
-
-            cd susfs4ksu
-
-            if git fetch --depth=1 origin "$KNOWN_GOOD_SUSFS_COMMIT" 2>/dev/null \
-              && git checkout --quiet --detach "$KNOWN_GOOD_SUSFS_COMMIT"; then
-
-              echo "Pinned successfully."
-              echo ""
-              echo "SUSFS commit (pinned):"
-              git log -1 --oneline
-
-            else
-
-              echo "::warning::Could not fetch the known-good pin ($KNOWN_GOOD_SUSFS_COMMIT)."
-              echo "::warning::Falling back to branch HEAD - compatibility is not guaranteed."
-
-            fi
-
-            cd "$KERNEL_DIR"
-
-          else
-
-            echo ""
-            echo "::warning::No known-compatible commit pin for android$ANDROID_VERSION-$KERNEL_VER yet."
-            echo "::warning::Using branch HEAD - compatibility is not guaranteed."
-
-          fi
-
-          echo ""
           echo "SUSFS commit:"
           git -C susfs4ksu log -1 --oneline
 
@@ -967,7 +911,7 @@ jobs:
       # INSTALL KERNELSU-NEXT WITH SUSFS
       # ============================================================
 
-      - name: Install KernelSU-Next (dev Branch, pinned)
+      - name: Install KernelSU-Next (dev Branch, latest)
         if: ${{ github.event.inputs.susfs_status == 'enable' && github.event.inputs.root_manager == 'KernelSU-Next' }}
         run: |
           set -e
@@ -980,43 +924,28 @@ jobs:
 
           # ------------------------------------------------------------
           # NOTE: the "next-susfs" branch was confirmed stale on
-          # 2026-08-13 - its driver code still calls susfs functions
-          # using an older calling convention than current susfs4ksu
-          # declares in susfs.h. WildKernels (a widely-used GKI+SUSFS
-          # kernel project) instead builds against the "dev" branch,
-          # pinned to a specific commit, paired with the susfs4ksu
-          # commits pinned in the "Download SUSFS" step above. We reuse
-          # that same tested pairing here.
+          # 2026-08-13 - its driver code called susfs functions using an
+          # older calling convention than susfs4ksu declares in susfs.h.
+          # The "dev" branch is the actively maintained one instead.
+          # This previously pinned "dev" to a specific months-old commit
+          # (from a tested WildKernels pairing), but that pin can itself
+          # become the problem over time (e.g. predating KMI/symbol
+          # fixes). Tracking branch HEAD directly now; the "Verify SUSFS
+          # + KernelSU-Next Compatibility" step further down still
+          # catches a genuine API mismatch in seconds rather than after
+          # a wasted 30+ minute build.
           # ------------------------------------------------------------
 
-          KNOWN_GOOD_KSU_COMMIT="f1b64f440f3cd170e2a86d7816bef26fbdee1caa"
-          
           echo ""
-          echo "Cloning KernelSU-Next (dev branch)..."
+          echo "Cloning KernelSU-Next (dev branch, latest)..."
           
           git clone \
+            --depth=1 \
             --no-tags \
             --single-branch \
             -b dev \
             https://github.com/pershoot/KernelSU-Next.git \
             KernelSU-Next
-          
-          cd KernelSU-Next
-          
-          echo ""
-          echo "=========================================="
-          echo "Pinning to known-compatible commit"
-          echo "=========================================="
-          echo "Target: $KNOWN_GOOD_KSU_COMMIT"
-          
-          if git checkout --quiet --detach "$KNOWN_GOOD_KSU_COMMIT" 2>/dev/null; then
-            echo "Pinned successfully."
-          else
-            echo "::warning::Could not check out the known-good pin ($KNOWN_GOOD_KSU_COMMIT)."
-            echo "::warning::Staying on branch HEAD - compatibility is not guaranteed."
-          fi
-          
-          cd "$KERNEL_DIR"
           
           echo ""
           echo "KernelSU-Next commit:"
@@ -1241,6 +1170,67 @@ jobs:
           echo ""
           echo "No root manager will be integrated"
           echo "✓ Proceeding with vanilla kernel build"
+
+
+      # ============================================================
+      # CAPTURE ROOT MANAGER INFO
+      # ============================================================
+      #
+      # Whichever root manager step above actually ran left its source
+      # checked out in a known directory. This grabs a short commit SHA
+      # from it (so the Telegram caption can show exactly what was
+      # built, not a guessed/live "latest" number we have no reliable
+      # way to query) and the matching community Telegram link the
+      # person asked to use as the reference source for each manager.
+      # ============================================================
+
+      - name: Capture Root Manager Info
+        run: |
+          set -e
+
+          ROOT_MANAGER="${{ github.event.inputs.root_manager }}"
+          ROOT_MANAGER_COMMIT=""
+          ROOT_MANAGER_TG_URL=""
+
+          case "$ROOT_MANAGER" in
+            "KernelSU-Next")
+              ROOT_MANAGER_TG_URL="https://t.me/ksunext_ci"
+              for CANDIDATE in "$KERNEL_DIR/KernelSU-Next" "$KERNEL_DIR/KernelSU"; do
+                if [ -d "$CANDIDATE/.git" ]; then
+                  ROOT_MANAGER_COMMIT="$(git -C "$CANDIDATE" rev-parse --short HEAD)"
+                  break
+                fi
+              done
+              ;;
+            "SukiSU-Ultra")
+              ROOT_MANAGER_TG_URL="https://t.me/SukiKSU"
+              for CANDIDATE in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/SukiSU-Ultra"; do
+                if [ -d "$CANDIDATE/.git" ]; then
+                  ROOT_MANAGER_COMMIT="$(git -C "$CANDIDATE" rev-parse --short HEAD)"
+                  break
+                fi
+              done
+              ;;
+            "ReSukiSU")
+              ROOT_MANAGER_TG_URL="https://t.me/ReSukiSU/4"
+              for CANDIDATE in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/ReSukiSU"; do
+                if [ -d "$CANDIDATE/.git" ]; then
+                  ROOT_MANAGER_COMMIT="$(git -C "$CANDIDATE" rev-parse --short HEAD)"
+                  break
+                fi
+              done
+              ;;
+            "Vanilla")
+              : # no root manager, nothing to capture
+              ;;
+          esac
+
+          echo "Root manager : $ROOT_MANAGER"
+          echo "Commit       : ${ROOT_MANAGER_COMMIT:-N/A}"
+          echo "Telegram     : ${ROOT_MANAGER_TG_URL:-N/A}"
+
+          echo "ROOT_MANAGER_COMMIT=$ROOT_MANAGER_COMMIT" >> "$GITHUB_ENV"
+          echo "ROOT_MANAGER_TG_URL=$ROOT_MANAGER_TG_URL" >> "$GITHUB_ENV"
 
 
       # ============================================================
@@ -1865,8 +1855,7 @@ jobs:
             "✨ <b>${KERNEL_NAME_ESC} Build Success</b> ✨"
             ""
             "<pre>"
-            "Kernel      : Linux $FULL_KERNEL_VERSION"
-            "Android     : ${{ env.ANDROID_VERSION }}"
+            "Kernel      : Linux ${{ env.ANDROID_VERSION }}-$FULL_KERNEL_VERSION"
             "Compiler    : ${{ github.event.inputs.compiler }}"
             "LTO         : ${{ github.event.inputs.lto_mode }}"
             ""
@@ -1881,11 +1870,19 @@ jobs:
             "✅ Ready to flash (AnyKernel3)!"
           )
           
-          if [ -n "${MANAGER_APP_URL:-}" ]; then
-            CAPTION_LINES+=("📲 Manager app: $MANAGER_APP_URL")
+          # "Manager app version: <short commit>" - the commit is what
+          # this specific build actually compiled against (captured by
+          # the "Capture Root Manager Info" step), linked to the
+          # community Telegram channel for that root manager. There is
+          # no reliable way to query "the current latest CI build
+          # number" from inside this workflow, so this links to the
+          # channel itself rather than guessing a number that might not
+          # match.
+          if [ -n "${ROOT_MANAGER_COMMIT:-}" ] && [ -n "${ROOT_MANAGER_TG_URL:-}" ]; then
+            CAPTION_LINES+=("📲 Manager app version: <a href=\"$ROOT_MANAGER_TG_URL\">$ROOT_MANAGER_COMMIT</a>")
           fi
           
-          CAPTION_LINES+=("🔗 Run: $RUN_URL")
+          CAPTION_LINES+=("🔗 Run: #$GITHUB_RUN_ID")
           
           CAPTION="$(printf '%s\n' "${CAPTION_LINES[@]}")"
           
