@@ -67,6 +67,15 @@ on:
           - 'enable'
           - 'disable'
 
+      experimental_mtk_modules:
+        description: 'EXPERIMENTAL: inspect MediaTek device_modules source for duchamp (investigative only - does not change the flashable output yet)'
+        required: true
+        default: 'disable'
+        type: choice
+        options:
+          - 'disable'
+          - 'enable'
+
 
 jobs:
   build:
@@ -1536,6 +1545,97 @@ jobs:
             fi
             exit 1
           fi
+
+
+      # ============================================================
+      # [EXPERIMENTAL] INSPECT MEDIATEK DEVICE_MODULES SOURCE
+      # ============================================================
+      #
+      # duchamp's WiFi failure traces to MediaTek's WMT/connectivity
+      # driver, which lives entirely OUTSIDE the generic AOSP common
+      # kernel tree - in a separate, MediaTek-maintained
+      # "device_modules" source (out-of-tree kernel modules built
+      # against common's headers, typically via plain `make`, not the
+      # Bazel/Kleaf system common uses).
+      #
+      # This step ONLY downloads and inspects that source - it does
+      # NOT build anything and does NOT touch the AK3 zip in any way.
+      # Purpose: learn the real build layout (Makefiles, scripts) from
+      # the actual source before writing any compile/packaging logic
+      # against it, rather than guessing. Getting the real kernel
+      # module ABI wrong here is the kind of mistake that could produce
+      # a kernel that panics on boot, so this stays strictly read-only
+      # until we've confirmed how it actually needs to be built.
+      # ============================================================
+
+      - name: "[EXPERIMENTAL] Inspect MediaTek Device Modules"
+        if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
+        continue-on-error: true
+        run: |
+          set +e
+
+          echo "=========================================="
+          echo "EXPERIMENTAL - investigative only, no build output is affected"
+          echo "=========================================="
+
+          MTK_DIR="$KERNEL_DIR/mtk_device_modules"
+          rm -rf "$MTK_DIR"
+
+          CLONED=0
+
+          for CANDIDATE_URL in \
+            "https://github.com/mt6897-devs/android_kernel_device_modules_6.1" \
+            "https://github.com/MinatiScape/mediatek_kernel_device_modules"; do
+
+            echo ""
+            echo "Trying: $CANDIDATE_URL"
+
+            if git clone --depth=1 "$CANDIDATE_URL" "$MTK_DIR" 2>&1; then
+              CLONED=1
+              echo "Cloned successfully from: $CANDIDATE_URL"
+              break
+            else
+              echo "Failed (branch may differ, or repo path may have changed)."
+            fi
+
+          done
+
+          if [ "$CLONED" -ne 1 ]; then
+            echo ""
+            echo "::warning::Could not clone any candidate MediaTek device_modules source."
+            echo "::warning::Repo names/branches for community MTK sources change over time -"
+            echo "::warning::this needs a manually-verified URL+branch, not a guess."
+            exit 0
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "Top-level structure"
+          echo "=========================================="
+          find "$MTK_DIR" -maxdepth 1 -mindepth 1 | sort
+
+          echo ""
+          echo "=========================================="
+          echo "Looking for the mt6897 platform directory"
+          echo "=========================================="
+          find "$MTK_DIR" -maxdepth 3 -iname "*6897*" -type d
+
+          echo ""
+          echo "=========================================="
+          echo "Looking for build entry points (Makefile, Kbuild, build.sh)"
+          echo "=========================================="
+          find "$MTK_DIR" -maxdepth 2 -type f \( -iname "Makefile" -o -iname "Kbuild" -o -iname "build.sh" -o -iname "*.mk" \) | sort
+
+          echo ""
+          echo "=========================================="
+          echo "Looking for the WMT/connectivity driver specifically"
+          echo "=========================================="
+          find "$MTK_DIR" -type d -iname "*connectivity*" -o -type d -iname "*wmt*" 2>/dev/null | head -20
+
+          echo ""
+          echo "=========================================="
+          echo "End of inspection - nothing above affects the AK3 zip"
+          echo "=========================================="
 
 
       # ============================================================
