@@ -1634,6 +1634,41 @@ jobs:
 
           echo ""
           echo "=========================================="
+          echo "Contents of mt6897/ (device-specific platform dir)"
+          echo "=========================================="
+          find "$MTK_DIR/mt6897" -maxdepth 2 2>/dev/null | sort
+
+          echo ""
+          echo "=========================================="
+          echo "BUILD.bazel targets defined for mt6897"
+          echo "=========================================="
+          find "$MTK_DIR/mt6897" -iname "BUILD.bazel" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null | head -150
+
+          echo ""
+          echo "=========================================="
+          echo "Looking for a stated/pinned 'common' kernel revision"
+          echo "=========================================="
+          echo ""
+          echo "-- grep for 'common' mentions in build configs --"
+          grep -rl "common" "$MTK_DIR"/build.config* 2>/dev/null | while read -r F; do
+            echo "--- $F ---"
+            grep -n "common" "$F"
+          done
+
+          echo ""
+          echo "-- grep for 'common' mentions in top-level BUILD.bazel --"
+          grep -n "common" "$MTK_DIR/BUILD.bazel" 2>/dev/null
+
+          echo ""
+          echo "-- README / documentation mentioning a compatible revision --"
+          find "$MTK_DIR" -maxdepth 1 -iname "README*" -exec cat {} \; 2>/dev/null | head -80
+
+          echo ""
+          echo "-- most recent commits (may reference which common tag they synced against) --"
+          git -C "$MTK_DIR" log -5 --oneline 2>/dev/null
+
+          echo ""
+          echo "=========================================="
           echo "End of inspection - nothing above affects the AK3 zip"
           echo "=========================================="
 
