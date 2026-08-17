@@ -1669,6 +1669,47 @@ jobs:
 
           echo ""
           echo "=========================================="
+          echo "Cloning the 3rd tree: vendor/mediatek/kernel_modules"
+          echo "=========================================="
+          echo ""
+          echo "(build.config.mtk_kernel_device_modules referenced"
+          echo "../vendor/mediatek/kernel_modules/connectivity/common -"
+          echo "checking it out as a sibling of mtk_device_modules so that"
+          echo "relative path resolves the same way it would in a real manifest)"
+
+          VENDOR_MTK_DIR="$KERNEL_DIR/vendor/mediatek/kernel_modules"
+          mkdir -p "$(dirname "$VENDOR_MTK_DIR")"
+          rm -rf "$VENDOR_MTK_DIR"
+
+          if git clone --depth=1 \
+            "https://github.com/mt6897-devs/android_vendor_mediatek_kernel_modules" \
+            "$VENDOR_MTK_DIR" 2>&1; then
+
+            echo ""
+            echo "Cloned successfully."
+
+            echo ""
+            echo "Top-level structure:"
+            find "$VENDOR_MTK_DIR" -maxdepth 1 -mindepth 1 | sort
+
+            echo ""
+            echo "Looking for connectivity/common specifically:"
+            find "$VENDOR_MTK_DIR" -maxdepth 3 -iname "connectivity" -o -maxdepth 3 -iname "common" 2>/dev/null
+
+            echo ""
+            echo "Looking for WMT/CONSYS driver source inside it:"
+            find "$VENDOR_MTK_DIR" -iname "*wmt*" -o -iname "*consys*" 2>/dev/null | head -30
+
+          else
+
+            echo ""
+            echo "::warning::Could not clone android_vendor_mediatek_kernel_modules."
+            echo "::warning::Repo name/path may differ from what was found via search."
+
+          fi
+
+          echo ""
+          echo "=========================================="
           echo "End of inspection - nothing above affects the AK3 zip"
           echo "=========================================="
 
