@@ -1681,6 +1681,8 @@ jobs:
           mkdir -p "$(dirname "$VENDOR_MTK_DIR")"
           rm -rf "$VENDOR_MTK_DIR"
 
+          WMT_COMPILE_TEST_DIR=""
+
           if git clone --depth=1 \
             "https://github.com/mt6897-devs/android_vendor_mediatek_kernel_modules" \
             "$VENDOR_MTK_DIR" 2>&1; then
@@ -1700,6 +1702,8 @@ jobs:
             echo "Looking for WMT/CONSYS driver source inside it:"
             find "$VENDOR_MTK_DIR" -iname "*wmt*" -o -iname "*consys*" 2>/dev/null | head -30
 
+            WMT_COMPILE_TEST_DIR="$VENDOR_MTK_DIR/connectivity/wlan/adaptor/build/connac3x"
+
           else
 
             echo ""
@@ -1707,6 +1711,80 @@ jobs:
             echo "::warning::Repo name/path may differ from what was found via search."
 
           fi
+
+          # ------------------------------------------------------------
+          # COMPILE TEST (still just a test - nothing here touches the
+          # flashable AK3 output). This checks whether the WMT/connac3x
+          # driver source even compiles as a standard out-of-tree module
+          # against the kernel we already built, using the Module
+          # support files GKI kernels publish specifically for this
+          # (Module.symvers / headers in dist/). If this fails, that's
+          # itself useful information - it would mean MediaTek's driver
+          # needs source-level changes to build against this kernel
+          # commit, not just the right directory layout.
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "=========================================="
+          echo "Compile test: WMT connac3x driver vs our built kernel"
+          echo "=========================================="
+
+          KERNEL_DIST="$KERNEL_DIR/out/kernel_aarch64/dist"
+
+          if [ -z "$WMT_COMPILE_TEST_DIR" ] || [ ! -d "$WMT_COMPILE_TEST_DIR" ]; then
+
+            echo "Skipping - WMT connac3x source directory not available."
+
+          elif [ ! -f "$KERNEL_DIST/Module.symvers" ]; then
+
+            echo "Skipping - $KERNEL_DIST/Module.symvers not found."
+            echo "Dist directory contents (for reference):"
+            find "$KERNEL_DIST" -maxdepth 1 -type f | sort
+
+          else
+
+            echo "Found Module.symvers - attempting an out-of-tree module build..."
+            echo "Source: $WMT_COMPILE_TEST_DIR"
+
+            MODULE_BUILD_DIR="$KERNEL_DIR/wmt_compile_test"
+            rm -rf "$MODULE_BUILD_DIR"
+            mkdir -p "$MODULE_BUILD_DIR"
+            cp -r "$WMT_COMPILE_TEST_DIR"/. "$MODULE_BUILD_DIR/"
+            cp "$KERNEL_DIST/Module.symvers" "$MODULE_BUILD_DIR/"
+
+            CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
+
+            make -C "$KERNEL_DIR/common" \
+              M="$MODULE_BUILD_DIR" \
+              ARCH=arm64 \
+              ${CLANG_BIN:+CC="$CLANG_BIN"} \
+              LLVM=1 \
+              modules 2>&1 | tail -100
+
+            COMPILE_RESULT=$?
+
+            echo ""
+            if [ "$COMPILE_RESULT" -eq 0 ] && find "$MODULE_BUILD_DIR" -name "*.ko" | grep -q .; then
+              echo "✓✓✓ COMPILE SUCCEEDED - .ko produced:"
+              find "$MODULE_BUILD_DIR" -name "*.ko"
+            else
+              echo "✗ Compile test did not produce a .ko (exit code: $COMPILE_RESULT)."
+              echo "This is genuinely useful information either way - see the build"
+              echo "output above for the actual error."
+            fi
+
+            rm -rf "$MODULE_BUILD_DIR"
+
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "Cleaning up - these trees are large and were the direct"
+          echo "cause of a 'No space left on device' failure last run"
+          echo "=========================================="
+
+          rm -rf "$MTK_DIR" "$KERNEL_DIR/vendor"
+          df -h "$KERNEL_DIR" 2>/dev/null || true
 
           echo ""
           echo "=========================================="
