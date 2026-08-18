@@ -121,6 +121,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android/sdk
           sudo rm -rf /usr/local/share/powershell
           sudo rm -rf /usr/lib/jvm
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/az
+          sudo rm -rf /opt/microsoft
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/.ghcup
+          sudo docker image prune -a -f 2>/dev/null || true
+          sudo docker system prune -a -f 2>/dev/null || true
           
           echo ""
           echo "=========================================="
@@ -1568,6 +1575,34 @@ jobs:
       # until we've confirmed how it actually needs to be built.
       # ============================================================
 
+      - name: "[EXPERIMENTAL] Free Bazel Scratch Space"
+        if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
+        continue-on-error: true
+        run: |
+          set +e
+
+          echo "=========================================="
+          echo "Freeing Bazel's transient build scratch space"
+          echo "=========================================="
+          echo ""
+          echo "(Not the persistent disk cache at ~/.cache/bazel-disk -"
+          echo "that's left alone. This is Bazel's execroot/output-base"
+          echo "working directory, which is no longer needed now that"
+          echo "dist/ has already been extracted from it, and was the"
+          echo "main reason a previous run hit 'No space left on device'.)"
+
+          df -h "$KERNEL_DIR" 2>/dev/null
+
+          cd "$KERNEL_DIR" 2>/dev/null && tools/bazel shutdown 2>&1 | tail -5
+
+          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/execroot 2>/dev/null
+          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/output-base 2>/dev/null
+
+          echo ""
+          echo "After:"
+          df -h "$KERNEL_DIR" 2>/dev/null
+
+
       - name: "[EXPERIMENTAL] Inspect MediaTek Device Modules"
         if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
         continue-on-error: true
@@ -1765,15 +1800,20 @@ jobs:
 
             cp "$KERNEL_DIST/kernel_aarch64_Module.symvers" "$PREPARED_OUTDIR/Module.symvers"
 
-            MODULE_BUILD_DIR="$KERNEL_DIR/wmt_compile_test"
-            rm -rf "$MODULE_BUILD_DIR"
-            mkdir -p "$MODULE_BUILD_DIR"
-            cp -r "$WMT_COMPILE_TEST_DIR"/. "$MODULE_BUILD_DIR/"
+            # NOTE: build M= against the source IN PLACE, not a copy.
+            # Its Kbuild/Makefile uses relative paths (e.g. ../../Kbuild)
+            # assuming it's still sitting inside the real connectivity/
+            # tree next to its actual sibling directories (adaptor/,
+            # wlan/, etc.) - copying just this one leaf directory
+            # elsewhere breaks those references, which is exactly what
+            # failed last run ("No such file or directory" on a mangled
+            # path). We don't modify this source, so building in place
+            # is safe.
 
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
 
             make -C "$PREPARED_OUTDIR" \
-              M="$MODULE_BUILD_DIR" \
+              M="$WMT_COMPILE_TEST_DIR" \
               ARCH=arm64 \
               ${CLANG_BIN:+CC="$CLANG_BIN"} \
               LLVM=1 \
@@ -1782,16 +1822,16 @@ jobs:
             COMPILE_RESULT=$?
 
             echo ""
-            if [ "$COMPILE_RESULT" -eq 0 ] && find "$MODULE_BUILD_DIR" -name "*.ko" | grep -q .; then
+            if [ "$COMPILE_RESULT" -eq 0 ] && find "$WMT_COMPILE_TEST_DIR" -name "*.ko" | grep -q .; then
               echo "✓✓✓ COMPILE SUCCEEDED - .ko produced:"
-              find "$MODULE_BUILD_DIR" -name "*.ko"
+              find "$WMT_COMPILE_TEST_DIR" -name "*.ko"
             else
               echo "✗ Compile test did not produce a .ko (exit code: $COMPILE_RESULT)."
               echo "This is genuinely useful information either way - see the build"
               echo "output above for the actual error."
             fi
 
-            rm -rf "$MODULE_BUILD_DIR" "$PREPARED_OUTDIR"
+            rm -rf "$PREPARED_OUTDIR"
 
           fi
 
