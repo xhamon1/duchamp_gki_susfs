@@ -1735,31 +1735,49 @@ jobs:
 
             echo "Skipping - WMT connac3x source directory not available."
 
-          elif [ ! -f "$KERNEL_DIST/Module.symvers" ]; then
+          elif [ ! -f "$KERNEL_DIST/kernel_aarch64_Module.symvers" ]; then
 
-            echo "Skipping - $KERNEL_DIST/Module.symvers not found."
+            echo "Skipping - $KERNEL_DIST/kernel_aarch64_Module.symvers not found."
             echo "Dist directory contents (for reference):"
             find "$KERNEL_DIST" -maxdepth 1 -type f | sort
 
+          elif [ ! -f "$KERNEL_DIST/modules_prepare_outdir.tar.gz" ]; then
+
+            echo "Skipping - modules_prepare_outdir.tar.gz not found."
+            echo "(This is what Kleaf publishes specifically for building"
+            echo "out-of-tree modules - without it there's no complete,"
+            echo "correctly-configured build environment to compile against.)"
+
           else
 
-            echo "Found Module.symvers - attempting an out-of-tree module build..."
+            echo "Found modules_prepare_outdir.tar.gz + Module.symvers -"
+            echo "attempting an out-of-tree module build..."
             echo "Source: $WMT_COMPILE_TEST_DIR"
+
+            PREPARED_OUTDIR="$KERNEL_DIR/modules_prepare_outdir"
+            rm -rf "$PREPARED_OUTDIR"
+            mkdir -p "$PREPARED_OUTDIR"
+            tar -xzf "$KERNEL_DIST/modules_prepare_outdir.tar.gz" -C "$PREPARED_OUTDIR"
+
+            echo ""
+            echo "Prepared outdir top-level contents:"
+            find "$PREPARED_OUTDIR" -maxdepth 1 | sort
+
+            cp "$KERNEL_DIST/kernel_aarch64_Module.symvers" "$PREPARED_OUTDIR/Module.symvers"
 
             MODULE_BUILD_DIR="$KERNEL_DIR/wmt_compile_test"
             rm -rf "$MODULE_BUILD_DIR"
             mkdir -p "$MODULE_BUILD_DIR"
             cp -r "$WMT_COMPILE_TEST_DIR"/. "$MODULE_BUILD_DIR/"
-            cp "$KERNEL_DIST/Module.symvers" "$MODULE_BUILD_DIR/"
 
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
 
-            make -C "$KERNEL_DIR/common" \
+            make -C "$PREPARED_OUTDIR" \
               M="$MODULE_BUILD_DIR" \
               ARCH=arm64 \
               ${CLANG_BIN:+CC="$CLANG_BIN"} \
               LLVM=1 \
-              modules 2>&1 | tail -100
+              modules 2>&1 | tail -150
 
             COMPILE_RESULT=$?
 
@@ -1773,7 +1791,7 @@ jobs:
               echo "output above for the actual error."
             fi
 
-            rm -rf "$MODULE_BUILD_DIR"
+            rm -rf "$MODULE_BUILD_DIR" "$PREPARED_OUTDIR"
 
           fi
 
