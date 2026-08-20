@@ -1800,20 +1800,26 @@ jobs:
 
             cp "$KERNEL_DIST/kernel_aarch64_Module.symvers" "$PREPARED_OUTDIR/Module.symvers"
 
-            # NOTE: build M= against the source IN PLACE, not a copy.
-            # Its Kbuild/Makefile uses relative paths (e.g. ../../Kbuild)
-            # assuming it's still sitting inside the real connectivity/
-            # tree next to its actual sibling directories (adaptor/,
-            # wlan/, etc.) - copying just this one leaf directory
-            # elsewhere breaks those references, which is exactly what
-            # failed last run ("No such file or directory" on a mangled
-            # path). We don't modify this source, so building in place
-            # is safe.
+            # NOTE: build M= against the source IN PLACE (no copying -
+            # see the note in the previous run's log about why a copy
+            # broke things). Also: the actual error from the last run
+            # showed MediaTek's Kbuild.include machinery literally
+            # concatenating $(srctree)/$(M)/../../Kbuild as a string,
+            # and srctree resolves to $KERNEL_DIR/common (visible in the
+            # error's own path prefix) - so M= has to be a path RELATIVE
+            # to common/, not absolute, or that concatenation produces a
+            # mangled path. Verified this resolves to a sensible
+            # .../adaptor/Kbuild target before relying on it here.
+
+            REL_M="$(realpath --relative-to="$KERNEL_DIR/common" "$WMT_COMPILE_TEST_DIR")"
+
+            echo ""
+            echo "M= (relative to common/): $REL_M"
 
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
 
             make -C "$PREPARED_OUTDIR" \
-              M="$WMT_COMPILE_TEST_DIR" \
+              M="$REL_M" \
               ARCH=arm64 \
               ${CLANG_BIN:+CC="$CLANG_BIN"} \
               LLVM=1 \
