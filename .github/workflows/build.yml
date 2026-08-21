@@ -1575,34 +1575,6 @@ jobs:
       # until we've confirmed how it actually needs to be built.
       # ============================================================
 
-      - name: "[EXPERIMENTAL] Free Bazel Scratch Space"
-        if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
-        continue-on-error: true
-        run: |
-          set +e
-
-          echo "=========================================="
-          echo "Freeing Bazel's transient build scratch space"
-          echo "=========================================="
-          echo ""
-          echo "(Not the persistent disk cache at ~/.cache/bazel-disk -"
-          echo "that's left alone. This is Bazel's execroot/output-base"
-          echo "working directory, which is no longer needed now that"
-          echo "dist/ has already been extracted from it, and was the"
-          echo "main reason a previous run hit 'No space left on device'.)"
-
-          df -h "$KERNEL_DIR" 2>/dev/null
-
-          cd "$KERNEL_DIR" 2>/dev/null && tools/bazel shutdown 2>&1 | tail -5
-
-          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/execroot 2>/dev/null
-          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/output-base 2>/dev/null
-
-          echo ""
-          echo "After:"
-          df -h "$KERNEL_DIR" 2>/dev/null
-
-
       - name: "[EXPERIMENTAL] Inspect MediaTek Device Modules"
         if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
         continue-on-error: true
@@ -1816,7 +1788,27 @@ jobs:
             echo ""
             echo "M= (relative to common/): $REL_M"
 
+            # Prefer the exact AOSP clang the kernel was actually built
+            # with (found in Bazel's cache, since for the AOSP compiler
+            # choice nothing gets downloaded to $GITHUB_WORKSPACE/clang -
+            # that directory is empty in that case). Using a mismatched
+            # compiler is exactly what caused the previous attempt to
+            # fail on unsupported flags like -fsanitize=kcfi.
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
+
+            if [ -z "$CLANG_BIN" ]; then
+              CLANG_BIN="$(find "$HOME/.cache/bazel-disk" "$HOME/.cache/bazel" \
+                -maxdepth 10 -iname clang -type f 2>/dev/null \
+                | grep -v "clang-tidy\|clang-format" | head -n1)"
+            fi
+
+            if [ -z "$CLANG_BIN" ]; then
+              echo "::warning::Could not find the AOSP clang used for the main build."
+              echo "::warning::Falling back to whatever 'clang' is on PATH - version may not match."
+            else
+              echo "Using: $CLANG_BIN"
+              "$CLANG_BIN" --version 2>&1 | head -3
+            fi
 
             make -C "$PREPARED_OUTDIR" \
               M="$REL_M" \
@@ -1848,6 +1840,17 @@ jobs:
           echo "=========================================="
 
           rm -rf "$MTK_DIR" "$KERNEL_DIR/vendor"
+
+          echo ""
+          echo "Also freeing Bazel's transient scratch space now that the"
+          echo "compile test (which needed its cached clang toolchain) is"
+          echo "done with it. Not touching ~/.cache/bazel-disk, the"
+          echo "persistent cache actions/cache saves for next run's speed."
+
+          cd "$KERNEL_DIR" 2>/dev/null && tools/bazel shutdown 2>&1 | tail -5
+          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/execroot 2>/dev/null
+          rm -rf "$HOME/.cache/bazel/_bazel_$(whoami)"/*/output-base 2>/dev/null
+
           df -h "$KERNEL_DIR" 2>/dev/null || true
 
           echo ""
