@@ -1794,34 +1794,43 @@ jobs:
             # $GITHUB_WORKSPACE/clang - that's empty in that case).
             # Using a mismatched compiler is exactly what caused the
             # previous attempts to fail on flags like -fsanitize=kcfi.
-            # Asking Bazel directly for its output_base instead of
-            # guessing $HOME/.cache/bazel - that guess found nothing
-            # last run, so the toolchain must live somewhere else.
+            #
+            # Bazel's real output root turned out to be
+            # $KERNEL_DIR/out/bazel/output_user_root/<hash> (confirmed
+            # from an actual run), not ~/.cache/bazel as first guessed -
+            # but even searching there directly didn't turn up a bare
+            # "clang" file, so this also tries: (a) no depth limit within
+            # that confirmed real root, (b) the whole repo-synced
+            # workspace in case the toolchain is a checked-out project
+            # (e.g. prebuilts/clang/...) rather than something Bazel
+            # itself downloaded, and (c) matching the exact release tag
+            # from the warning message (r487747c) - a far more unique,
+            # findable target than a generic "clang" filename.
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
 
             if [ -z "$CLANG_BIN" ]; then
 
               BAZEL_OUTPUT_BASE="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_base 2>/dev/null)"
-              BAZEL_OUTPUT_USER_ROOT="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_path 2>/dev/null | sed 's#/execroot/.*##')"
-
               echo "Bazel output_base: ${BAZEL_OUTPUT_BASE:-<not found>}"
-              echo "Bazel output root: ${BAZEL_OUTPUT_USER_ROOT:-<not found>}"
 
-              for SEARCH_ROOT in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$HOME/.cache/bazel-disk" "$HOME/.cache/bazel"; do
+              echo ""
+              echo "Looking for the r487747c release directory anywhere under the workspace..."
+              R487747C_DIR="$(find "$KERNEL_DIR" "$BAZEL_OUTPUT_BASE" -maxdepth 15 -type d -iname "*r487747c*" 2>/dev/null | head -n1)"
+              echo "Found: ${R487747C_DIR:-<none>}"
 
-                if [ -n "$SEARCH_ROOT" ] && [ -d "$SEARCH_ROOT" ]; then
+              if [ -n "$R487747C_DIR" ]; then
+                CLANG_BIN="$(find "$R487747C_DIR" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
+              fi
 
-                  CLANG_BIN="$(
-                    find "$SEARCH_ROOT" -maxdepth 12 -type f -iname clang 2>/dev/null \
-                      | grep -v "clang-tidy\|clang-format\|clang-check" \
-                      | head -n1
-                  )"
+              if [ -z "$CLANG_BIN" ] && [ -n "$BAZEL_OUTPUT_BASE" ] && [ -d "$BAZEL_OUTPUT_BASE" ]; then
+                echo "Falling back to a time-capped search under output_base (max 60s)..."
+                CLANG_BIN="$(timeout 60 find "$BAZEL_OUTPUT_BASE" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
+              fi
 
-                  [ -n "$CLANG_BIN" ] && break
-
-                fi
-
-              done
+              if [ -z "$CLANG_BIN" ]; then
+                echo "Falling back to searching the whole repo-synced workspace..."
+                CLANG_BIN="$(find "$KERNEL_DIR" -maxdepth 8 -type f -iname clang -path "*clang*/bin/*" 2>/dev/null | head -n1)"
+              fi
 
             fi
 
