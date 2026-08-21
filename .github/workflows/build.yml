@@ -1789,17 +1789,40 @@ jobs:
             echo "M= (relative to common/): $REL_M"
 
             # Prefer the exact AOSP clang the kernel was actually built
-            # with (found in Bazel's cache, since for the AOSP compiler
-            # choice nothing gets downloaded to $GITHUB_WORKSPACE/clang -
-            # that directory is empty in that case). Using a mismatched
-            # compiler is exactly what caused the previous attempt to
-            # fail on unsupported flags like -fsanitize=kcfi.
+            # with (found via Bazel's own output_base, since for the
+            # AOSP compiler choice nothing gets downloaded to
+            # $GITHUB_WORKSPACE/clang - that's empty in that case).
+            # Using a mismatched compiler is exactly what caused the
+            # previous attempts to fail on flags like -fsanitize=kcfi.
+            # Asking Bazel directly for its output_base instead of
+            # guessing $HOME/.cache/bazel - that guess found nothing
+            # last run, so the toolchain must live somewhere else.
             CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
 
             if [ -z "$CLANG_BIN" ]; then
-              CLANG_BIN="$(find "$HOME/.cache/bazel-disk" "$HOME/.cache/bazel" \
-                -maxdepth 10 -iname clang -type f 2>/dev/null \
-                | grep -v "clang-tidy\|clang-format" | head -n1)"
+
+              BAZEL_OUTPUT_BASE="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_base 2>/dev/null)"
+              BAZEL_OUTPUT_USER_ROOT="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_path 2>/dev/null | sed 's#/execroot/.*##')"
+
+              echo "Bazel output_base: ${BAZEL_OUTPUT_BASE:-<not found>}"
+              echo "Bazel output root: ${BAZEL_OUTPUT_USER_ROOT:-<not found>}"
+
+              for SEARCH_ROOT in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$HOME/.cache/bazel-disk" "$HOME/.cache/bazel"; do
+
+                if [ -n "$SEARCH_ROOT" ] && [ -d "$SEARCH_ROOT" ]; then
+
+                  CLANG_BIN="$(
+                    find "$SEARCH_ROOT" -maxdepth 12 -type f -iname clang 2>/dev/null \
+                      | grep -v "clang-tidy\|clang-format\|clang-check" \
+                      | head -n1
+                  )"
+
+                  [ -n "$CLANG_BIN" ] && break
+
+                fi
+
+              done
+
             fi
 
             if [ -z "$CLANG_BIN" ]; then
