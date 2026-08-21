@@ -1840,9 +1840,19 @@ jobs:
             else
               echo "Using: $CLANG_BIN"
               "$CLANG_BIN" --version 2>&1 | head -3
+
+              # LLVM=1 tells Kbuild to resolve companion tools (llvm-nm,
+              # llvm-ar, llvm-objcopy, ld.lld, etc.) via PATH using their
+              # standard names - finding clang alone isn't enough, its
+              # sibling tools in the same toolchain directory need to be
+              # reachable too, or steps like check-local-export's
+              # llvm-nm call have nothing correctly-matched to run.
+              export PATH="$(dirname "$CLANG_BIN"):$PATH"
+              echo "Added to PATH: $(dirname "$CLANG_BIN")"
+              echo "llvm-nm resolves to: $(command -v llvm-nm 2>/dev/null || echo '<not found>')"
             fi
 
-            make -C "$PREPARED_OUTDIR" \
+            timeout 180 make -C "$PREPARED_OUTDIR" \
               M="$REL_M" \
               ARCH=arm64 \
               ${CLANG_BIN:+CC="$CLANG_BIN"} \
