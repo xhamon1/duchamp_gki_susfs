@@ -1709,6 +1709,32 @@ jobs:
             echo "Looking for WMT/CONSYS driver source inside it:"
             find "$VENDOR_MTK_DIR" -iname "*wmt*" -o -iname "*consys*" 2>/dev/null | head -30
 
+            echo ""
+            echo "=========================================="
+            echo "Looking for conninfra's own build entry point"
+            echo "=========================================="
+            echo ""
+            echo "(This is the lower-level power-sequencing/CONSYS layer -"
+            echo "the actual kernel log diagnosis pointed here, not at the"
+            echo "wlan/adaptor character-device layer above it, so this"
+            echo "may matter more for actually fixing WiFi than what was"
+            echo "just proven to compile.)"
+
+            find "$VENDOR_MTK_DIR/connectivity/conninfra" \
+              -type f \( -iname "Kbuild" -o -iname "Makefile" \) 2>/dev/null | sort
+
+            CONNINFRA_DIR="$(
+              find "$VENDOR_MTK_DIR/connectivity/conninfra" \
+                -type f -iname "Kbuild" 2>/dev/null \
+                | xargs -I{} dirname {} \
+                | grep -i "mt6897\|connv2" \
+                | head -n1
+            )"
+
+            echo ""
+            echo "Best guess at the mt6897-relevant conninfra build dir:"
+            echo "${CONNINFRA_DIR:-<none found>}"
+
             WMT_COMPILE_TEST_DIR="$VENDOR_MTK_DIR/connectivity/wlan/adaptor/build/connac3x"
 
           else
@@ -1733,124 +1759,52 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "Compile test: WMT connac3x driver vs our built kernel"
+          echo "Compile test: MediaTek modules vs our built kernel"
           echo "=========================================="
 
           KERNEL_DIST="$KERNEL_DIR/out/kernel_aarch64/dist"
 
-          if [ -z "$WMT_COMPILE_TEST_DIR" ] || [ ! -d "$WMT_COMPILE_TEST_DIR" ]; then
+          # Reusable now that connac3x proved this mechanism actually
+          # works: correct clang + its sibling llvm-* tools on PATH,
+          # M= relative to common/ (required by MediaTek's custom
+          # Kbuild.include path concatenation), built against the
+          # published modules_prepare_outdir. Tries a given module
+          # directory and reports success/failure - never touches the
+          # flashable AK3 output.
+          try_compile_mtk_module() {
 
-            echo "Skipping - WMT connac3x source directory not available."
+            local LABEL="$1"
+            local SRC_DIR="$2"
 
-          elif [ ! -f "$KERNEL_DIST/kernel_aarch64_Module.symvers" ]; then
+            echo ""
+            echo "------------------------------------------"
+            echo "Target: $LABEL"
+            echo "------------------------------------------"
 
-            echo "Skipping - $KERNEL_DIST/kernel_aarch64_Module.symvers not found."
-            echo "Dist directory contents (for reference):"
-            find "$KERNEL_DIST" -maxdepth 1 -type f | sort
+            if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR" ]; then
+              echo "Skipping - source directory not available."
+              return
+            fi
 
-          elif [ ! -f "$KERNEL_DIST/modules_prepare_outdir.tar.gz" ]; then
+            if [ ! -f "$KERNEL_DIST/kernel_aarch64_Module.symvers" ] || [ ! -f "$KERNEL_DIST/modules_prepare_outdir.tar.gz" ]; then
+              echo "Skipping - required dist artifacts not found."
+              return
+            fi
 
-            echo "Skipping - modules_prepare_outdir.tar.gz not found."
-            echo "(This is what Kleaf publishes specifically for building"
-            echo "out-of-tree modules - without it there's no complete,"
-            echo "correctly-configured build environment to compile against.)"
+            echo "Source: $SRC_DIR"
 
-          else
-
-            echo "Found modules_prepare_outdir.tar.gz + Module.symvers -"
-            echo "attempting an out-of-tree module build..."
-            echo "Source: $WMT_COMPILE_TEST_DIR"
-
-            PREPARED_OUTDIR="$KERNEL_DIR/modules_prepare_outdir"
+            local PREPARED_OUTDIR="$KERNEL_DIR/modules_prepare_outdir"
             rm -rf "$PREPARED_OUTDIR"
             mkdir -p "$PREPARED_OUTDIR"
             tar -xzf "$KERNEL_DIST/modules_prepare_outdir.tar.gz" -C "$PREPARED_OUTDIR"
-
-            echo ""
-            echo "Prepared outdir top-level contents:"
-            find "$PREPARED_OUTDIR" -maxdepth 1 | sort
-
             cp "$KERNEL_DIST/kernel_aarch64_Module.symvers" "$PREPARED_OUTDIR/Module.symvers"
 
-            # NOTE: build M= against the source IN PLACE (no copying -
-            # see the note in the previous run's log about why a copy
-            # broke things). Also: the actual error from the last run
-            # showed MediaTek's Kbuild.include machinery literally
-            # concatenating $(srctree)/$(M)/../../Kbuild as a string,
-            # and srctree resolves to $KERNEL_DIR/common (visible in the
-            # error's own path prefix) - so M= has to be a path RELATIVE
-            # to common/, not absolute, or that concatenation produces a
-            # mangled path. Verified this resolves to a sensible
-            # .../adaptor/Kbuild target before relying on it here.
-
-            REL_M="$(realpath --relative-to="$KERNEL_DIR/common" "$WMT_COMPILE_TEST_DIR")"
-
-            echo ""
+            # M= must be relative to common/ - MediaTek's Kbuild.include
+            # concatenates $(srctree)/$(M)/../../Kbuild as a literal
+            # string, and srctree resolves to $KERNEL_DIR/common.
+            local REL_M
+            REL_M="$(realpath --relative-to="$KERNEL_DIR/common" "$SRC_DIR")"
             echo "M= (relative to common/): $REL_M"
-
-            # Prefer the exact AOSP clang the kernel was actually built
-            # with (found via Bazel's own output_base, since for the
-            # AOSP compiler choice nothing gets downloaded to
-            # $GITHUB_WORKSPACE/clang - that's empty in that case).
-            # Using a mismatched compiler is exactly what caused the
-            # previous attempts to fail on flags like -fsanitize=kcfi.
-            #
-            # Bazel's real output root turned out to be
-            # $KERNEL_DIR/out/bazel/output_user_root/<hash> (confirmed
-            # from an actual run), not ~/.cache/bazel as first guessed -
-            # but even searching there directly didn't turn up a bare
-            # "clang" file, so this also tries: (a) no depth limit within
-            # that confirmed real root, (b) the whole repo-synced
-            # workspace in case the toolchain is a checked-out project
-            # (e.g. prebuilts/clang/...) rather than something Bazel
-            # itself downloaded, and (c) matching the exact release tag
-            # from the warning message (r487747c) - a far more unique,
-            # findable target than a generic "clang" filename.
-            CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
-
-            if [ -z "$CLANG_BIN" ]; then
-
-              BAZEL_OUTPUT_BASE="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_base 2>/dev/null)"
-              echo "Bazel output_base: ${BAZEL_OUTPUT_BASE:-<not found>}"
-
-              echo ""
-              echo "Looking for the r487747c release directory anywhere under the workspace..."
-              R487747C_DIR="$(find "$KERNEL_DIR" "$BAZEL_OUTPUT_BASE" -maxdepth 15 -type d -iname "*r487747c*" 2>/dev/null | head -n1)"
-              echo "Found: ${R487747C_DIR:-<none>}"
-
-              if [ -n "$R487747C_DIR" ]; then
-                CLANG_BIN="$(find "$R487747C_DIR" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
-              fi
-
-              if [ -z "$CLANG_BIN" ] && [ -n "$BAZEL_OUTPUT_BASE" ] && [ -d "$BAZEL_OUTPUT_BASE" ]; then
-                echo "Falling back to a time-capped search under output_base (max 60s)..."
-                CLANG_BIN="$(timeout 60 find "$BAZEL_OUTPUT_BASE" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
-              fi
-
-              if [ -z "$CLANG_BIN" ]; then
-                echo "Falling back to searching the whole repo-synced workspace..."
-                CLANG_BIN="$(find "$KERNEL_DIR" -maxdepth 8 -type f -iname clang -path "*clang*/bin/*" 2>/dev/null | head -n1)"
-              fi
-
-            fi
-
-            if [ -z "$CLANG_BIN" ]; then
-              echo "::warning::Could not find the AOSP clang used for the main build."
-              echo "::warning::Falling back to whatever 'clang' is on PATH - version may not match."
-            else
-              echo "Using: $CLANG_BIN"
-              "$CLANG_BIN" --version 2>&1 | head -3
-
-              # LLVM=1 tells Kbuild to resolve companion tools (llvm-nm,
-              # llvm-ar, llvm-objcopy, ld.lld, etc.) via PATH using their
-              # standard names - finding clang alone isn't enough, its
-              # sibling tools in the same toolchain directory need to be
-              # reachable too, or steps like check-local-export's
-              # llvm-nm call have nothing correctly-matched to run.
-              export PATH="$(dirname "$CLANG_BIN"):$PATH"
-              echo "Added to PATH: $(dirname "$CLANG_BIN")"
-              echo "llvm-nm resolves to: $(command -v llvm-nm 2>/dev/null || echo '<not found>')"
-            fi
 
             timeout 180 make -C "$PREPARED_OUTDIR" \
               M="$REL_M" \
@@ -1859,21 +1813,70 @@ jobs:
               LLVM=1 \
               modules 2>&1 | tail -150
 
-            COMPILE_RESULT=$?
+            local COMPILE_RESULT=$?
 
             echo ""
-            if [ "$COMPILE_RESULT" -eq 0 ] && find "$WMT_COMPILE_TEST_DIR" -name "*.ko" | grep -q .; then
+            if [ "$COMPILE_RESULT" -eq 0 ] && find "$SRC_DIR" -name "*.ko" | grep -q .; then
               echo "✓✓✓ COMPILE SUCCEEDED - .ko produced:"
-              find "$WMT_COMPILE_TEST_DIR" -name "*.ko"
+              find "$SRC_DIR" -name "*.ko"
             else
-              echo "✗ Compile test did not produce a .ko (exit code: $COMPILE_RESULT)."
-              echo "This is genuinely useful information either way - see the build"
-              echo "output above for the actual error."
+              echo "✗ Compile did not produce a .ko (exit code: $COMPILE_RESULT)."
             fi
 
             rm -rf "$PREPARED_OUTDIR"
 
+          }
+
+          # ------------------------------------------------------------
+          # Locate the correct AOSP clang once (shared by both targets).
+          # See prior run notes: Bazel's real output root turned out to
+          # be $KERNEL_DIR/out/bazel/output_user_root/<hash>, and the
+          # toolchain itself is actually a repo-synced project at
+          # prebuilts/clang/host/linux-x86/clang-r487747c, not something
+          # Bazel downloaded into its own cache - hence searching by the
+          # exact release tag rather than a bare "clang" filename.
+          # ------------------------------------------------------------
+
+          CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -maxdepth 6 -iname clang -type f 2>/dev/null | head -n1)"
+
+          if [ -z "$CLANG_BIN" ]; then
+
+            BAZEL_OUTPUT_BASE="$(cd "$KERNEL_DIR" 2>/dev/null && tools/bazel info output_base 2>/dev/null)"
+            echo "Bazel output_base: ${BAZEL_OUTPUT_BASE:-<not found>}"
+
+            R487747C_DIR="$(find "$KERNEL_DIR" "$BAZEL_OUTPUT_BASE" -maxdepth 15 -type d -iname "*r487747c*" 2>/dev/null | head -n1)"
+            echo "r487747c dir: ${R487747C_DIR:-<none>}"
+
+            if [ -n "$R487747C_DIR" ]; then
+              CLANG_BIN="$(find "$R487747C_DIR" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
+            fi
+
+            if [ -z "$CLANG_BIN" ] && [ -n "$BAZEL_OUTPUT_BASE" ] && [ -d "$BAZEL_OUTPUT_BASE" ]; then
+              CLANG_BIN="$(timeout 60 find "$BAZEL_OUTPUT_BASE" -type f -iname clang 2>/dev/null | grep -v "clang-tidy\|clang-format\|clang-check" | head -n1)"
+            fi
+
+            if [ -z "$CLANG_BIN" ]; then
+              CLANG_BIN="$(find "$KERNEL_DIR" -maxdepth 8 -type f -iname clang -path "*clang*/bin/*" 2>/dev/null | head -n1)"
+            fi
+
           fi
+
+          if [ -z "$CLANG_BIN" ]; then
+            echo "::warning::Could not find the AOSP clang used for the main build."
+          else
+            echo "Using: $CLANG_BIN"
+            "$CLANG_BIN" --version 2>&1 | head -3
+            export PATH="$(dirname "$CLANG_BIN"):$PATH"
+            echo "llvm-nm resolves to: $(command -v llvm-nm 2>/dev/null || echo '<not found>')"
+          fi
+
+          try_compile_mtk_module \
+            "wlan/adaptor connac3x (already proven working)" \
+            "$WMT_COMPILE_TEST_DIR"
+
+          try_compile_mtk_module \
+            "conninfra (power-sequencing/CONSYS - what the kernel log actually pointed to)" \
+            "$CONNINFRA_DIR"
 
           echo ""
           echo "=========================================="
