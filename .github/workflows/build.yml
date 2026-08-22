@@ -1721,18 +1721,25 @@ jobs:
             echo "just proven to compile.)"
 
             find "$VENDOR_MTK_DIR/connectivity/conninfra" \
+              -maxdepth 1 \
               -type f \( -iname "Kbuild" -o -iname "Makefile" \) 2>/dev/null | sort
 
-            CONNINFRA_DIR="$(
-              find "$VENDOR_MTK_DIR/connectivity/conninfra" \
-                -type f -iname "Kbuild" 2>/dev/null \
-                | xargs -I{} dirname {} \
-                | grep -i "mt6897\|connv2" \
-                | head -n1
-            )"
+            # NOTE: last run confirmed Kbuild/Makefile live directly in
+            # conninfra/ itself - there is no separate per-platform
+            # subdirectory with its own Kbuild the way connac3x has for
+            # wlan/adaptor. Platform selection (mt6897 vs mt6985 etc.)
+            # is presumably an internal Makefile variable instead - if
+            # one is required and not defaulted, that will show up
+            # clearly in the compile attempt's own output below.
+
+            if [ -f "$VENDOR_MTK_DIR/connectivity/conninfra/Kbuild" ]; then
+              CONNINFRA_DIR="$VENDOR_MTK_DIR/connectivity/conninfra"
+            else
+              CONNINFRA_DIR=""
+            fi
 
             echo ""
-            echo "Best guess at the mt6897-relevant conninfra build dir:"
+            echo "conninfra build dir:"
             echo "${CONNINFRA_DIR:-<none found>}"
 
             WMT_COMPILE_TEST_DIR="$VENDOR_MTK_DIR/connectivity/wlan/adaptor/build/connac3x"
