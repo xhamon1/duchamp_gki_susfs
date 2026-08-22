@@ -1826,6 +1826,10 @@ jobs:
             if [ "$COMPILE_RESULT" -eq 0 ] && find "$SRC_DIR" -name "*.ko" | grep -q .; then
               echo "✓✓✓ COMPILE SUCCEEDED - .ko produced:"
               find "$SRC_DIR" -name "*.ko"
+
+              mkdir -p "$KERNEL_DIR/mtk_modules_output"
+              find "$SRC_DIR" -name "*.ko" -exec cp {} "$KERNEL_DIR/mtk_modules_output/" \;
+              echo "Preserved to: $KERNEL_DIR/mtk_modules_output/"
             else
               echo "✗ Compile did not produce a .ko (exit code: $COMPILE_RESULT)."
             fi
@@ -2296,6 +2300,16 @@ jobs:
         with:
           name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ env.BUILD_NUMBER }}
           path: ${{ env.KERNEL_DIR }}/out/kernel_aarch64/dist
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: "[EXPERIMENTAL] Upload MediaTek Connectivity Modules"
+        if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtk-connectivity-modules-${{ env.BUILD_NUMBER }}
+          path: ${{ env.KERNEL_DIR }}/mtk_modules_output
           retention-days: 7
           if-no-files-found: warn
 
