@@ -76,6 +76,15 @@ on:
           - 'disable'
           - 'enable'
 
+      upload_raw_dist:
+        description: 'Also upload raw dist files (~400MB, for advanced debugging) - leave disabled to avoid hitting artifact storage quota'
+        required: true
+        default: 'disable'
+        type: choice
+        options:
+          - 'disable'
+          - 'enable'
+
 
 jobs:
   build:
@@ -2295,12 +2304,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Raw Dist Files (advanced/debugging)
-        if: success()
+        if: ${{ success() && github.event.inputs.upload_raw_dist == 'enable' }}
         uses: actions/upload-artifact@v4
         with:
           name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ env.BUILD_NUMBER }}
           path: ${{ env.KERNEL_DIR }}/out/kernel_aarch64/dist
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: warn
 
       - name: "[EXPERIMENTAL] Upload MediaTek Connectivity Modules"
