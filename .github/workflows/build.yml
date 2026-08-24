@@ -2348,7 +2348,7 @@ jobs:
         with:
           name: ${{ env.AK3_ZIP_BASENAME }}
           path: ${{ env.AK3_ZIP_PATH }}
-          retention-days: 30
+          retention-days: 5
           if-no-files-found: warn
 
       - name: Upload Raw Dist Files (advanced/debugging)
@@ -2357,7 +2357,7 @@ jobs:
         with:
           name: raw-dist-${{ env.ANDROID_VERSION }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.compiler }}-${{ github.event.inputs.lto_mode }}-${{ env.BUILD_NUMBER }}
           path: ${{ env.KERNEL_DIR }}/out/kernel_aarch64/dist
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: warn
 
       - name: "[EXPERIMENTAL] Upload MediaTek Connectivity Modules"
@@ -2367,7 +2367,7 @@ jobs:
         with:
           name: mtk-connectivity-modules-${{ env.BUILD_NUMBER }}
           path: ${{ env.KERNEL_DIR }}/mtk_modules_output
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: warn
 
 
