@@ -2239,49 +2239,9 @@ jobs:
           if [ "${{ github.event.inputs.experimental_mtk_modules }}" = "enable" ] \
             && [ -d "$KERNEL_DIR/mtk_modules_output" ] \
             && find "$KERNEL_DIR/mtk_modules_output" -name "*.ko" | grep -q .; then
-
-            echo ""
-            echo "=========================================="
-            echo "[EXPERIMENTAL] Injecting MediaTek connectivity modules"
-            echo "=========================================="
-
-            mkdir -p ramdisk/lib/modules
-            cp "$KERNEL_DIR/mtk_modules_output"/*.ko ramdisk/lib/modules/
-
-            # NOTE: a ramdisk/init.*.rc file in the zip only gets
-            # imported if something in the REAL device init.rc imports
-            # it - which we don't control and can't edit at build time
-            # (it only exists on the device, at flash time). Instead,
-            # this appends the insmod trigger directly to the real
-            # init.rc AFTER ak3-core.sh has already extracted it, using
-            # a NEW "on post-fs-data" block - Android init runs every
-            # block matching a trigger name, so adding one more is a
-            # safe append rather than replacing whatever's already
-            # there.
-            RAMDISK_VAR="$(grep -oE '\$(home/ramdisk|ramdisk)\b' tools/ak3-core.sh | sort -u | head -n1)"
-            echo "Detected AK3 ramdisk reference: ${RAMDISK_VAR:-<not found, using \$home/ramdisk>}"
-            RAMDISK_REF="${RAMDISK_VAR:-\$home/ramdisk}"
-
-            {
-              echo ""
-              echo "# --- [EXPERIMENTAL] MediaTek connectivity modules ---"
-              echo "if [ -d \"${RAMDISK_REF}\" ]; then"
-              echo "  cat >> \"${RAMDISK_REF}/init.rc\" << 'MTKRCEOF'"
-              echo ""
-              echo "on post-fs-data"
-              echo "    insmod /lib/modules/conninfra.ko"
-              echo "    insmod /lib/modules/wmt_chrdev_wifi_connac3.ko"
-              echo "MTKRCEOF"
-              echo "  ui_print \"[experimental] MediaTek WiFi modules added to init.rc\";"
-              echo "else"
-              echo "  ui_print \"[experimental] WARNING: ramdisk dir not found, MediaTek modules NOT wired into boot\";"
-              echo "fi"
-            } >> anykernel.sh
-
-            echo "Added: ramdisk/lib/modules/*.ko"
-            echo "Added: post-ak3-core.sh init.rc append (see anykernel.sh tail)"
-            find ramdisk -type f | sort
-
+            echo "[EXPERIMENTAL] MediaTek modules compiled but NOT injected into this zip"
+            echo "(injection broke AK3 zip validity last run - reverted for now,"
+            echo "download separately via the mtk-connectivity-modules artifact)"
           fi
 
           ZIP_NAME="${{ github.event.inputs.kernel_name }}-AK3-${FULL_KERNEL_VERSION}-${ROOT_MANAGER_SLUG}-${SUSFS_SLUG}-${BUILD_NUMBER}.zip"
