@@ -2320,7 +2320,68 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-      - name: "[EXPERIMENTAL] Upload MediaTek Connectivity Modules"
+      - name: "[EXPERIMENTAL] Fetch Prebuilt Duchamp Kernel Modules"
+        if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
+        continue-on-error: true
+        run: |
+          set +e
+
+          echo "=========================================="
+          echo "Fetching already-built modules from"
+          echo "mt6897-devs/device_xiaomi_duchamp-kernel"
+          echo "(used by real ROMs for this exact device -"
+          echo "if these load on our kernel, that is much"
+          echo "stronger evidence than our own from-scratch compile)"
+          echo "=========================================="
+
+          DK_DIR="$KERNEL_DIR/duchamp_kernel_prebuilt"
+          rm -rf "$DK_DIR"
+
+          for BRANCH in lineage-23.0 lineage-22.2 lineage-22.1 lineage-21; do
+            echo ""
+            echo "Trying branch: $BRANCH"
+            if git clone --depth=1 -b "$BRANCH" \
+              https://github.com/mt6897-devs/device_xiaomi_duchamp-kernel \
+              "$DK_DIR" 2>&1 | tail -5; then
+              echo "Cloned branch: $BRANCH"
+              break
+            fi
+          done
+
+          if [ ! -d "$DK_DIR" ]; then
+            echo "::warning::Could not clone device_xiaomi_duchamp-kernel on any tried branch."
+            exit 0
+          fi
+
+          echo ""
+          echo "Top-level contents:"
+          find "$DK_DIR" -maxdepth 1 | sort
+
+          echo ""
+          echo "Looking for actual .ko files (not just modules.load name lists)..."
+          find "$DK_DIR" -iname "*.ko" | sort | head -50
+
+          echo ""
+          echo "Specifically looking for conninfra / wmt / wifi modules..."
+          FOUND_KO="$(find "$DK_DIR" -iname "*.ko" \( -iname "*conninfra*" -o -iname "*wmt*" -o -iname "*wlan*" \) 2>/dev/null)"
+          echo "$FOUND_KO"
+
+          if [ -n "$FOUND_KO" ]; then
+            mkdir -p "$KERNEL_DIR/mtk_modules_output/prebuilt"
+            echo "$FOUND_KO" | xargs -I{} cp {} "$KERNEL_DIR/mtk_modules_output/prebuilt/"
+            echo ""
+            echo "✓ Copied prebuilt modules for testing:"
+            ls -la "$KERNEL_DIR/mtk_modules_output/prebuilt/"
+          else
+            echo "::warning::No matching prebuilt .ko files found in this repo."
+            echo "::warning::It likely only stores a module NAME list (modules.load),"
+            echo "::warning::not the compiled binaries themselves."
+          fi
+
+          rm -rf "$DK_DIR"
+
+
+
         if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
