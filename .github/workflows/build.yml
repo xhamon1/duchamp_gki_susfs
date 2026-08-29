@@ -2381,7 +2381,7 @@ jobs:
           rm -rf "$DK_DIR"
 
 
-
+      - name: "[EXPERIMENTAL] Upload MediaTek Connectivity Modules"
         if: ${{ github.event.inputs.experimental_mtk_modules == 'enable' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
